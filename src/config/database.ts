@@ -1,3 +1,4 @@
+// this file is used to connect to the database
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { env } from './env.js';
