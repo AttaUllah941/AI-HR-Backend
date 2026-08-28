@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: zenith-hr-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zenith
+      POSTGRES_PASSWORD: zenith
+      POSTGRES_DB: zenith_hr
+    ports:
+      - "5432:5432"
+    volumes:
+      - zenith_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zenith -d zenith_hr"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zenith-hr-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://zenith:zenith@postgres:5432/zenith_hr?schema=public
+      CORS_ORIGIN: http://localhost:4200
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  zenith_pg_data:

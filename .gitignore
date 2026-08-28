@@ -1,0 +1,15 @@
+node_modules/
+dist/
+logs/*.log
+.env
+.env.local
+.DS_Store
+coverage/
+generated/
+*.tsbuildinfo
+.idea/
+.vscode/
+.agents/
+.claude/
+.windsurf/
+skills-lock.json

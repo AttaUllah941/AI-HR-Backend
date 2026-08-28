@@ -1,0 +1,199 @@
+// Zenith Enterprise AI HR — Phase 1 foundation schema
+// Auth/RBAC skeleton; domain modules expand in later phases.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  PENDING_VERIFICATION
+  SUSPENDED
+  DELETED
+}
+
+enum SessionStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+model Company {
+  id          String    @id @default(cuid())
+  name        String
+  legalName   String?
+  email       String?
+  phone       String?
+  website     String?
+  logoUrl     String?
+  timezone    String    @default("UTC")
+  locale      String    @default("en-US")
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  users User[]
+
+  @@map("companies")
+}
+
+model User {
+  id                String     @id @default(cuid())
+  companyId         String?
+  email             String     @unique
+  passwordHash      String
+  firstName         String
+  lastName          String
+  phone             String?
+  avatarUrl         String?
+  status            UserStatus @default(PENDING_VERIFICATION)
+  emailVerifiedAt   DateTime?
+  mfaEnabled        Boolean    @default(false)
+  mfaSecret         String?
+  lastLoginAt       DateTime?
+  passwordChangedAt DateTime?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  deletedAt         DateTime?
+
+  company             Company?             @relation(fields: [companyId], references: [id])
+  userRoles           UserRole[]
+  sessions            Session[]
+  passwordResetTokens PasswordResetToken[]
+  emailTokens         EmailVerificationToken[]
+  auditLogs           AuditLog[]           @relation("AuditActor")
+
+  @@index([companyId])
+  @@index([status])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  description String?
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  module      String
+  action      String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rolePermissions RolePermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String   @id @default(cuid())
+  roleId       String
+  permissionId String
+  createdAt    DateTime @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  id        String   @id @default(cuid())
+  userId    String
+  roleId    String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@map("user_roles")
+}
+
+model Session {
+  id               String        @id @default(cuid())
+  userId           String
+  refreshTokenHash String
+  status           SessionStatus @default(ACTIVE)
+  ipAddress        String?
+  userAgent        String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([refreshTokenHash])
+  @@index([status])
+  @@map("sessions")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String
+  entityType String?
+  entityId   String?
+  metadata   Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
