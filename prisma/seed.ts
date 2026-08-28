@@ -34,6 +34,110 @@ const MODULES = [
   'roles',
 ] as const;
 
+/** Permission codes granted per role (roles:manage is Super Admin only). */
+const ROLE_PERMISSION_CODES: Record<string, 'ALL' | string[]> = {
+  SUPER_ADMIN: 'ALL',
+  HR_ADMIN: 'ALL', // filtered below to exclude roles:manage
+  HR_MANAGER: [
+    'dashboard:view',
+    'organization:view',
+    'organization:create',
+    'organization:update',
+    'employees:view',
+    'employees:create',
+    'employees:update',
+    'attendance:view',
+    'attendance:create',
+    'attendance:update',
+    'attendance:approve',
+    'attendance:export',
+    'leave:view',
+    'leave:create',
+    'leave:update',
+    'leave:approve',
+    'leave:export',
+    'payroll:view',
+    'payroll:export',
+    'recruitment:view',
+    'recruitment:create',
+    'recruitment:update',
+    'recruitment:approve',
+    'performance:view',
+    'performance:create',
+    'performance:update',
+    'performance:approve',
+    'ai:view',
+    'ai:create',
+    'reports:view',
+    'reports:export',
+    'notifications:view',
+    'notifications:manage',
+    'files:view',
+    'files:create',
+    'files:update',
+    'files:delete',
+    'users:view',
+    'users:update',
+    'settings:view',
+  ],
+  RECRUITER: [
+    'dashboard:view',
+    'employees:view',
+    'recruitment:view',
+    'recruitment:create',
+    'recruitment:update',
+    'recruitment:manage',
+    'ai:view',
+    'ai:create',
+    'reports:view',
+    'notifications:view',
+    'files:view',
+    'files:create',
+    'files:update',
+  ],
+  MANAGER: [
+    'dashboard:view',
+    'organization:view',
+    'employees:view',
+    'attendance:view',
+    'attendance:approve',
+    'leave:view',
+    'leave:approve',
+    'payroll:view',
+    'performance:view',
+    'performance:create',
+    'performance:update',
+    'performance:approve',
+    'reports:view',
+    'notifications:view',
+    'files:view',
+  ],
+  EMPLOYEE: [
+    'dashboard:view',
+    'attendance:view',
+    'attendance:create',
+    'leave:view',
+    'leave:create',
+    'payroll:view',
+    'performance:view',
+    'notifications:view',
+    'files:view',
+    'ai:view',
+  ],
+};
+
+async function grantPermissions(roleId: string, permissionIds: string[]): Promise<void> {
+  for (const permissionId of permissionIds) {
+    await prisma.rolePermission.upsert({
+      where: {
+        roleId_permissionId: { roleId, permissionId },
+      },
+      update: {},
+      create: { roleId, permissionId },
+    });
+  }
+}
+
 async function seed(): Promise<void> {
   console.log('Seeding roles and permissions...');
 
@@ -61,23 +165,30 @@ async function seed(): Promise<void> {
     }
   }
 
-  const superAdmin = await prisma.role.findUniqueOrThrow({ where: { code: 'SUPER_ADMIN' } });
   const allPermissions = await prisma.permission.findMany();
+  const permissionByCode = new Map(allPermissions.map((p) => [p.code, p]));
 
-  for (const permission of allPermissions) {
-    await prisma.rolePermission.upsert({
-      where: {
-        roleId_permissionId: {
-          roleId: superAdmin.id,
-          permissionId: permission.id,
-        },
-      },
-      update: {},
-      create: {
-        roleId: superAdmin.id,
-        permissionId: permission.id,
-      },
-    });
+  for (const roleDef of ROLES) {
+    const role = await prisma.role.findUniqueOrThrow({ where: { code: roleDef.code } });
+    const grant = ROLE_PERMISSION_CODES[roleDef.code];
+
+    let permissions = allPermissions;
+    if (grant === 'ALL') {
+      if (roleDef.code === 'HR_ADMIN') {
+        permissions = allPermissions.filter((p) => p.code !== 'roles:manage');
+      }
+    } else {
+      permissions = grant
+        .map((code) => permissionByCode.get(code))
+        .filter((p): p is (typeof allPermissions)[number] => Boolean(p));
+    }
+
+    // Replace role permissions so re-seed corrects matrices
+    await prisma.rolePermission.deleteMany({ where: { roleId: role.id } });
+    await grantPermissions(
+      role.id,
+      permissions.map((p) => p.id),
+    );
   }
 
   await prisma.company.upsert({
@@ -93,23 +204,7 @@ async function seed(): Promise<void> {
     },
   });
 
-  // Grant HR_ADMIN all permissions except roles:manage (super-admin only distinction later)
   const hrAdmin = await prisma.role.findUniqueOrThrow({ where: { code: 'HR_ADMIN' } });
-  for (const permission of allPermissions) {
-    await prisma.rolePermission.upsert({
-      where: {
-        roleId_permissionId: {
-          roleId: hrAdmin.id,
-          permissionId: permission.id,
-        },
-      },
-      update: {},
-      create: {
-        roleId: hrAdmin.id,
-        permissionId: permission.id,
-      },
-    });
-  }
 
   const { hash } = await import('bcryptjs');
   const passwordHash = await hash('Password123!', 12);
@@ -150,7 +245,7 @@ async function seed(): Promise<void> {
   });
 
   console.log('Seed completed successfully.');
-  console.log('Demo admin: admin@zenith.local / Password123!');
+  console.log('Demo admin: admin@zenith.local / Password123! (local/dev only)');
 }
 
 seed()

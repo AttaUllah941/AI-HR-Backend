@@ -59,9 +59,10 @@ export class AuthService {
     });
 
     const rawVerifyToken = generateRawToken();
+    const verificationTokenHash = hashToken(rawVerifyToken);
     await this.repo.createEmailVerificationToken(
       user.id,
-      hashToken(rawVerifyToken),
+      verificationTokenHash,
       new Date(Date.now() + 24 * 60 * 60 * 1000),
     );
 
@@ -71,6 +72,19 @@ export class AuthService {
       subject: 'Verify your Zenith HR email',
       text: `Welcome to Zenith HR. Verify your email: ${verifyLink}`,
     });
+
+    // Local/dev has no real inbox — activate immediately so login works after register.
+    let publicUser = user;
+    if (isDevelopment) {
+      const verification = await this.repo.findEmailVerificationToken(verificationTokenHash);
+      if (verification) {
+        await this.repo.markEmailVerificationUsed(verification.id);
+      }
+      publicUser = await this.repo.updateUser(user.id, {
+        status: 'ACTIVE',
+        emailVerifiedAt: new Date(),
+      });
+    }
 
     await this.repo.createAuditLog({
       actorId: user.id,
@@ -82,7 +96,7 @@ export class AuthService {
     });
 
     return {
-      user: toPublicUser(user),
+      user: toPublicUser(publicUser),
       ...(isDevelopment ? { verificationToken: rawVerifyToken } : {}),
     };
   }
@@ -95,6 +109,10 @@ export class AuthService {
 
     if (user.status === 'SUSPENDED' || user.status === 'DELETED') {
       throw new ForbiddenError('Account is not allowed to sign in');
+    }
+
+    if (user.status === 'PENDING_VERIFICATION') {
+      throw new ForbiddenError('Please verify your email before signing in');
     }
 
     const valid = await verifyPassword(input.password, user.passwordHash);
@@ -116,7 +134,7 @@ export class AuthService {
       };
     }
 
-    return this.issueSession(user, meta, 'auth.login');
+    return this.issueSession(user, meta, 'auth.login', input.remember);
   }
 
   async verifyMfa(input: MfaVerifyInput, meta: { ip?: string; userAgent?: string }) {
@@ -130,6 +148,14 @@ export class AuthService {
     const user = await this.repo.findById(challenge.sub);
     if (!user?.mfaEnabled || !user.mfaSecret) {
       throw new UnauthorizedError('MFA is not enabled for this account');
+    }
+
+    if (user.status === 'PENDING_VERIFICATION') {
+      throw new ForbiddenError('Please verify your email before signing in');
+    }
+
+    if (user.status === 'SUSPENDED' || user.status === 'DELETED') {
+      throw new ForbiddenError('Account is not allowed to sign in');
     }
 
     if (!verifyMfaCode(user.mfaSecret, input.code)) {
@@ -154,7 +180,12 @@ export class AuthService {
     }
 
     const user = await this.repo.findById(payload.sub);
-    if (!user || user.status === 'SUSPENDED' || user.status === 'DELETED') {
+    if (
+      !user ||
+      user.status === 'SUSPENDED' ||
+      user.status === 'DELETED' ||
+      user.status === 'PENDING_VERIFICATION'
+    ) {
       throw new UnauthorizedError('Account is not allowed to refresh');
     }
 
@@ -346,13 +377,15 @@ export class AuthService {
     user: UserWithAuth,
     meta: { ip?: string; userAgent?: string },
     action: string,
+    remember = false,
   ) {
     const { roles, permissions } = extractRolesAndPermissions(user);
+    const refreshExpiresIn = remember ? '30d' : undefined;
 
     const session = await this.repo.createSession({
       userId: user.id,
       refreshTokenHash: 'pending',
-      expiresAt: getRefreshExpiryDate(),
+      expiresAt: getRefreshExpiryDate(refreshExpiresIn),
       ipAddress: meta.ip,
       userAgent: meta.userAgent,
     });
@@ -363,7 +396,7 @@ export class AuthService {
       roles,
       permissions,
     });
-    const refreshToken = signRefreshToken({ sub: user.id, sid: session.id });
+    const refreshToken = signRefreshToken({ sub: user.id, sid: session.id }, refreshExpiresIn);
 
     await this.repo.updateSession(session.id, {
       refreshTokenHash: hashToken(refreshToken),
@@ -378,9 +411,6 @@ export class AuthService {
       ipAddress: meta.ip,
       userAgent: meta.userAgent,
     });
-
-    // Auto-activate pending users on first successful password login in Phase 2
-    // if they somehow skip email verify in early environments — keep status as-is otherwise.
 
     return {
       mfaRequired: false as const,

@@ -27,9 +27,12 @@ export function signAccessToken(payload: Omit<AccessTokenPayload, 'type'>): stri
   });
 }
 
-export function signRefreshToken(payload: Omit<RefreshTokenPayload, 'type'>): string {
+export function signRefreshToken(
+  payload: Omit<RefreshTokenPayload, 'type'>,
+  expiresIn: string = env.JWT_REFRESH_EXPIRES_IN,
+): string {
   return jwt.sign({ ...payload, type: 'refresh' }, env.JWT_REFRESH_SECRET, {
-    expiresIn: env.JWT_REFRESH_EXPIRES_IN as jwt.SignOptions['expiresIn'],
+    expiresIn: expiresIn as jwt.SignOptions['expiresIn'],
   });
 }
 
@@ -63,8 +66,8 @@ export function verifyMfaChallengeToken(token: string): MfaChallengePayload {
   return payload;
 }
 
-export function getRefreshExpiryDate(): Date {
-  const match = /^(\d+)([smhd])$/i.exec(env.JWT_REFRESH_EXPIRES_IN);
+export function getRefreshExpiryDate(expiresIn: string = env.JWT_REFRESH_EXPIRES_IN): Date {
+  const match = /^(\d+)([smhd])$/i.exec(expiresIn);
   const now = Date.now();
   if (!match) {
     return new Date(now + 7 * 24 * 60 * 60 * 1000);
