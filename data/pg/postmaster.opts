@@ -1,0 +1,1 @@
+D:/Atta Ullah/AI HR System/AI-HR-Backend/node_modules/@embedded-postgres/windows-x64/native/bin/postgres.exe "-D" "D:\Atta Ullah\AI HR System\AI-HR-Backend\data\pg" "-p" "5432"
