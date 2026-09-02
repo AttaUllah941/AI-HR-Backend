@@ -1,16 +1,16 @@
 import type { Request, Response } from 'express';
 import { AuthService } from '../services/auth.service.js';
 import { successResponse } from '../../../interfaces/api-response.js';
-import {
-  forgotPasswordSchema,
-  loginSchema,
-  mfaDisableSchema,
-  mfaEnableSchema,
-  mfaVerifySchema,
-  refreshSchema,
-  registerSchema,
-  resetPasswordSchema,
-  verifyEmailSchema,
+import type {
+  ForgotPasswordInput,
+  LoginInput,
+  MfaDisableInput,
+  MfaEnableInput,
+  MfaVerifyInput,
+  RefreshInput,
+  RegisterInput,
+  ResetPasswordInput,
+  VerifyEmailInput,
 } from '../validators/auth.validators.js';
 
 export class AuthController {
@@ -24,20 +24,17 @@ export class AuthController {
   }
 
   register = async (req: Request, res: Response): Promise<void> => {
-    const input = registerSchema.parse(req.body);
-    const data = await this.service.register(input, this.meta(req));
+    const data = await this.service.register(req.body as RegisterInput, this.meta(req));
     res.status(201).json(successResponse(data, 'Registration successful'));
   };
 
   login = async (req: Request, res: Response): Promise<void> => {
-    const input = loginSchema.parse(req.body);
-    const data = await this.service.login(input, this.meta(req));
+    const data = await this.service.login(req.body as LoginInput, this.meta(req));
     res.json(successResponse(data, data.mfaRequired ? 'MFA required' : 'Login successful'));
   };
 
   refresh = async (req: Request, res: Response): Promise<void> => {
-    const input = refreshSchema.parse(req.body);
-    const data = await this.service.refresh(input);
+    const data = await this.service.refresh(req.body as RefreshInput);
     res.json(successResponse(data, 'Token refreshed'));
   };
 
@@ -54,26 +51,22 @@ export class AuthController {
   };
 
   forgotPassword = async (req: Request, res: Response): Promise<void> => {
-    const input = forgotPasswordSchema.parse(req.body);
-    const data = await this.service.forgotPassword(input);
+    const data = await this.service.forgotPassword(req.body as ForgotPasswordInput);
     res.json(successResponse(data, data.message));
   };
 
   resetPassword = async (req: Request, res: Response): Promise<void> => {
-    const input = resetPasswordSchema.parse(req.body);
-    const data = await this.service.resetPassword(input);
+    const data = await this.service.resetPassword(req.body as ResetPasswordInput);
     res.json(successResponse(data, 'Password reset successful'));
   };
 
   verifyEmail = async (req: Request, res: Response): Promise<void> => {
-    const input = verifyEmailSchema.parse(req.body);
-    const data = await this.service.verifyEmail(input);
+    const data = await this.service.verifyEmail(req.body as VerifyEmailInput);
     res.json(successResponse(data, 'Email verified'));
   };
 
   verifyMfa = async (req: Request, res: Response): Promise<void> => {
-    const input = mfaVerifySchema.parse(req.body);
-    const data = await this.service.verifyMfa(input, this.meta(req));
+    const data = await this.service.verifyMfa(req.body as MfaVerifyInput, this.meta(req));
     res.json(successResponse(data, 'MFA verified'));
   };
 
@@ -83,14 +76,12 @@ export class AuthController {
   };
 
   enableMfa = async (req: Request, res: Response): Promise<void> => {
-    const input = mfaEnableSchema.parse(req.body);
-    const data = await this.service.enableMfa(req.user!.id, input);
+    const data = await this.service.enableMfa(req.user!.id, req.body as MfaEnableInput);
     res.json(successResponse(data, 'MFA enabled'));
   };
 
   disableMfa = async (req: Request, res: Response): Promise<void> => {
-    const input = mfaDisableSchema.parse(req.body);
-    const data = await this.service.disableMfa(req.user!.id, input);
+    const data = await this.service.disableMfa(req.user!.id, req.body as MfaDisableInput);
     res.json(successResponse(data, 'MFA disabled'));
   };
 

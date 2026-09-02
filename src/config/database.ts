@@ -1,3 +1,4 @@
+// this file is used to connect to the database
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { env } from './env.js';
@@ -10,7 +11,19 @@ function createPrismaClient(): PrismaClient {
   return new PrismaClient({ adapter });
 }
 
-export const prisma = globalForPrisma.prisma ?? createPrismaClient();
+function isClientCurrent(client: PrismaClient | undefined): client is PrismaClient {
+  // Recreate cached clients that predate newly generated models (dev hot-reload safety).
+  return Boolean(
+    client &&
+      'employee' in client &&
+      client.employee &&
+      'attendanceRecord' in client &&
+      'branchAllowedIp' in client,
+  );
+}
+
+const cached = globalForPrisma.prisma;
+export const prisma = isClientCurrent(cached) ? cached : createPrismaClient();
 
 if (process.env.NODE_ENV !== 'production') {
   globalForPrisma.prisma = prisma;
