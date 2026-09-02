@@ -90,6 +90,27 @@ All require auth. View endpoints use `employees:view`; create/delete use `employ
 | POST/PATCH/DELETE | `/api/v1/employees/:id/certifications` | Certifications CRUD |
 | POST/PATCH/DELETE | `/api/v1/employees/:id/documents` | Documents CRUD |
 
+## Phase 6 attendance endpoints
+
+All require auth. View uses `attendance:view`; clock/create uses `attendance:create`; edits use `attendance:update`; overtime review uses `attendance:approve`.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/attendance/summary` | Today (or date) KPI summary |
+| GET | `/api/v1/attendance/records` | Paginated daily attendance |
+| GET | `/api/v1/attendance/records/:id` | Single attendance record |
+| POST/PATCH/DELETE | `/api/v1/attendance/records` | Manual attendance CRUD |
+| POST | `/api/v1/attendance/clock-in` | Clock in |
+| POST | `/api/v1/attendance/clock-out` | Clock out |
+| GET | `/api/v1/attendance/me/today` | Current user’s today status |
+| GET | `/api/v1/attendance/timesheet` | Employee timesheet range |
+| GET | `/api/v1/attendance/report` | Status aggregation report |
+| GET/POST/PATCH/DELETE | `/api/v1/attendance/shifts` | Shift management |
+| GET/POST/PATCH/DELETE | `/api/v1/attendance/holidays` | Holiday calendar |
+| GET/POST | `/api/v1/attendance/overtime` | Overtime requests |
+| POST | `/api/v1/attendance/overtime/:id/approve` | Approve overtime |
+| POST | `/api/v1/attendance/overtime/:id/reject` | Reject overtime |
+
 ### Seeded demo user
 
 After `npm run prisma:seed`:

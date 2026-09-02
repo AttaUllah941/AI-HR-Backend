@@ -1,10 +1,17 @@
 import { z } from 'zod';
+import { isValidIpOrCidr } from '../../../utils/ip-matcher.js';
 
 const optionalString = (max: number) =>
   z.preprocess(
     (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
     z.string().max(max).optional().nullable(),
   );
+
+const ipOrCidr = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => isValidIpOrCidr(value), 'Must be a valid IP address or CIDR range');
 
 export const createBranchSchema = z.object({
   name: z.string().min(1).max(150),
@@ -22,6 +29,7 @@ export const createBranchSchema = z.object({
   ),
   isHeadOffice: z.boolean().optional(),
   isActive: z.boolean().optional(),
+  allowedIps: z.array(ipOrCidr).optional(),
 });
 
 export const updateBranchSchema = createBranchSchema.partial();
