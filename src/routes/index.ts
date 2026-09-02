@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { attendanceRouter } from '../modules/attendance/attendance.routes.js';
 import { authRouter } from '../modules/auth/auth.routes.js';
 import { dashboardRouter } from '../modules/dashboard/dashboard.routes.js';
 import { employeesRouter } from '../modules/employees/employees.routes.js';
@@ -12,3 +13,4 @@ apiRouter.use('/auth', authRouter);
 apiRouter.use('/dashboard', dashboardRouter);
 apiRouter.use('/organization', organizationRouter);
 apiRouter.use('/employees', employeesRouter);
+apiRouter.use('/attendance', attendanceRouter);

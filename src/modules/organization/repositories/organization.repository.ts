@@ -1,4 +1,6 @@
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../../../config/database.js';
+import { normalizeCidr } from '../../../utils/ip-matcher.js';
 import type {
   CreateBranchInput,
   CreateDepartmentInput,
@@ -11,6 +13,14 @@ import type {
 } from '../validators/organization.validators.js';
 
 const notDeleted = { deletedAt: null };
+
+const branchInclude = {
+  allowedIps: {
+    where: { isActive: true },
+    select: { id: true, cidr: true, label: true },
+    orderBy: { cidr: 'asc' as const },
+  },
+} satisfies Prisma.BranchInclude;
 
 export class OrganizationRepository {
   findUserCompanyId(userId: string) {
@@ -46,51 +56,102 @@ export class OrganizationRepository {
   listBranches(companyId: string) {
     return prisma.branch.findMany({
       where: { companyId, ...notDeleted },
+      include: branchInclude,
       orderBy: [{ isHeadOffice: 'desc' }, { name: 'asc' }],
     });
   }
 
   findBranch(companyId: string, id: string) {
-    return prisma.branch.findFirst({ where: { id, companyId, ...notDeleted } });
+    return prisma.branch.findFirst({
+      where: { id, companyId, ...notDeleted },
+      include: branchInclude,
+    });
+  }
+
+  async syncBranchAllowedIps(branchId: string, allowedIps?: string[]) {
+    if (allowedIps === undefined) {
+      return;
+    }
+
+    const normalized = [...new Set(allowedIps.map((ip) => normalizeCidr(ip)))];
+    await prisma.$transaction(async (tx) => {
+      await tx.branchAllowedIp.deleteMany({ where: { branchId } });
+      if (normalized.length) {
+        await tx.branchAllowedIp.createMany({
+          data: normalized.map((cidr) => ({ branchId, cidr })),
+        });
+      }
+    });
   }
 
   createBranch(companyId: string, data: CreateBranchInput) {
-    return prisma.branch.create({
-      data: {
-        companyId,
-        name: data.name,
-        code: data.code.trim().toUpperCase(),
-        addressLine1: data.addressLine1 ?? null,
-        addressLine2: data.addressLine2 ?? null,
-        city: data.city ?? null,
-        state: data.state ?? null,
-        country: data.country ?? null,
-        postalCode: data.postalCode ?? null,
-        phone: data.phone ?? null,
-        email: data.email ?? null,
-        isHeadOffice: data.isHeadOffice ?? false,
-        isActive: data.isActive ?? true,
-      },
+    return prisma.$transaction(async (tx) => {
+      const branch = await tx.branch.create({
+        data: {
+          companyId,
+          name: data.name,
+          code: data.code.trim().toUpperCase(),
+          addressLine1: data.addressLine1 ?? null,
+          addressLine2: data.addressLine2 ?? null,
+          city: data.city ?? null,
+          state: data.state ?? null,
+          country: data.country ?? null,
+          postalCode: data.postalCode ?? null,
+          phone: data.phone ?? null,
+          email: data.email ?? null,
+          isHeadOffice: data.isHeadOffice ?? false,
+          isActive: data.isActive ?? true,
+        },
+      });
+
+      if (data.allowedIps?.length) {
+        const normalized = [...new Set(data.allowedIps.map((ip) => normalizeCidr(ip)))];
+        await tx.branchAllowedIp.createMany({
+          data: normalized.map((cidr) => ({ branchId: branch.id, cidr })),
+        });
+      }
+
+      return tx.branch.findUniqueOrThrow({
+        where: { id: branch.id },
+        include: branchInclude,
+      });
     });
   }
 
   updateBranch(id: string, data: UpdateBranchInput) {
-    return prisma.branch.update({
-      where: { id },
-      data: {
-        ...(data.name !== undefined ? { name: data.name } : {}),
-        ...(data.code !== undefined ? { code: data.code.trim().toUpperCase() } : {}),
-        ...(data.addressLine1 !== undefined ? { addressLine1: data.addressLine1 } : {}),
-        ...(data.addressLine2 !== undefined ? { addressLine2: data.addressLine2 } : {}),
-        ...(data.city !== undefined ? { city: data.city } : {}),
-        ...(data.state !== undefined ? { state: data.state } : {}),
-        ...(data.country !== undefined ? { country: data.country } : {}),
-        ...(data.postalCode !== undefined ? { postalCode: data.postalCode } : {}),
-        ...(data.phone !== undefined ? { phone: data.phone } : {}),
-        ...(data.email !== undefined ? { email: data.email } : {}),
-        ...(data.isHeadOffice !== undefined ? { isHeadOffice: data.isHeadOffice } : {}),
-        ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
-      },
+    return prisma.$transaction(async (tx) => {
+      await tx.branch.update({
+        where: { id },
+        data: {
+          ...(data.name !== undefined ? { name: data.name } : {}),
+          ...(data.code !== undefined ? { code: data.code.trim().toUpperCase() } : {}),
+          ...(data.addressLine1 !== undefined ? { addressLine1: data.addressLine1 } : {}),
+          ...(data.addressLine2 !== undefined ? { addressLine2: data.addressLine2 } : {}),
+          ...(data.city !== undefined ? { city: data.city } : {}),
+          ...(data.state !== undefined ? { state: data.state } : {}),
+          ...(data.country !== undefined ? { country: data.country } : {}),
+          ...(data.postalCode !== undefined ? { postalCode: data.postalCode } : {}),
+          ...(data.phone !== undefined ? { phone: data.phone } : {}),
+          ...(data.email !== undefined ? { email: data.email } : {}),
+          ...(data.isHeadOffice !== undefined ? { isHeadOffice: data.isHeadOffice } : {}),
+          ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+        },
+      });
+
+      if (data.allowedIps !== undefined) {
+        const normalized = [...new Set(data.allowedIps.map((ip) => normalizeCidr(ip)))];
+        await tx.branchAllowedIp.deleteMany({ where: { branchId: id } });
+        if (normalized.length) {
+          await tx.branchAllowedIp.createMany({
+            data: normalized.map((cidr) => ({ branchId: id, cidr })),
+          });
+        }
+      }
+
+      return tx.branch.findUniqueOrThrow({
+        where: { id },
+        include: branchInclude,
+      });
     });
   }
 

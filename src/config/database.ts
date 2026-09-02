@@ -13,7 +13,13 @@ function createPrismaClient(): PrismaClient {
 
 function isClientCurrent(client: PrismaClient | undefined): client is PrismaClient {
   // Recreate cached clients that predate newly generated models (dev hot-reload safety).
-  return Boolean(client && 'employee' in client && client.employee);
+  return Boolean(
+    client &&
+      'employee' in client &&
+      client.employee &&
+      'attendanceRecord' in client &&
+      'branchAllowedIp' in client,
+  );
 }
 
 const cached = globalForPrisma.prisma;

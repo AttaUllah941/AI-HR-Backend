@@ -244,6 +244,43 @@ async function seed(): Promise<void> {
     },
   });
 
+  const employeeRole = await prisma.role.findUniqueOrThrow({ where: { code: 'EMPLOYEE' } });
+
+  const employeeUser = await prisma.user.upsert({
+    where: { email: 'employee@zenith.local' },
+    update: {
+      passwordHash,
+      status: 'ACTIVE',
+      emailVerifiedAt: new Date(),
+      firstName: 'Ali',
+      lastName: 'Hassan',
+      companyId: 'seed-company-zenith',
+    },
+    create: {
+      email: 'employee@zenith.local',
+      passwordHash,
+      firstName: 'Ali',
+      lastName: 'Hassan',
+      status: 'ACTIVE',
+      emailVerifiedAt: new Date(),
+      companyId: 'seed-company-zenith',
+    },
+  });
+
+  await prisma.userRole.upsert({
+    where: {
+      userId_roleId: {
+        userId: employeeUser.id,
+        roleId: employeeRole.id,
+      },
+    },
+    update: {},
+    create: {
+      userId: employeeUser.id,
+      roleId: employeeRole.id,
+    },
+  });
+
   const companyId = 'seed-company-zenith';
 
   const headOffice = await prisma.branch.upsert({
@@ -259,7 +296,7 @@ async function seed(): Promise<void> {
     },
   });
 
-  await prisma.branch.upsert({
+  const lahoreBranch = await prisma.branch.upsert({
     where: { companyId_code: { companyId, code: 'LHR' } },
     update: { name: 'Lahore Branch', city: 'Lahore', country: 'Pakistan' },
     create: {
@@ -270,6 +307,21 @@ async function seed(): Promise<void> {
       country: 'Pakistan',
     },
   });
+
+  for (const cidr of ['127.0.0.1', '::1', '192.168.0.0/16']) {
+    await prisma.branchAllowedIp.upsert({
+      where: { branchId_cidr: { branchId: headOffice.id, cidr } },
+      update: { isActive: true },
+      create: { branchId: headOffice.id, cidr },
+    });
+  }
+  for (const cidr of ['10.0.0.0/8', '127.0.0.1', '::1']) {
+    await prisma.branchAllowedIp.upsert({
+      where: { branchId_cidr: { branchId: lahoreBranch.id, cidr } },
+      update: { isActive: true },
+      create: { branchId: lahoreBranch.id, cidr },
+    });
+  }
 
   const hrDept = await prisma.department.upsert({
     where: { companyId_code: { companyId, code: 'HR' } },
@@ -408,9 +460,11 @@ async function seed(): Promise<void> {
       branchId: headOffice.id,
       designationId: sseDesignation.id,
       joinDate: new Date('2022-01-10'),
+      userId: employeeUser.id,
     },
     create: {
       companyId,
+      userId: employeeUser.id,
       employeeCode: 'EMP002',
       firstName: 'Ali',
       lastName: 'Hassan',
@@ -479,9 +533,11 @@ async function seed(): Promise<void> {
       branchId: headOffice.id,
       designationId: mgrDesignation.id,
       joinDate: new Date('2019-08-20'),
+      userId: admin.id,
     },
     create: {
       companyId,
+      userId: admin.id,
       employeeCode: 'EMP004',
       firstName: 'Fatima',
       lastName: 'Qureshi',
@@ -498,6 +554,13 @@ async function seed(): Promise<void> {
       city: 'Karachi',
       country: 'Pakistan',
     },
+  });
+
+  const hrEmployee = await prisma.employee.findUniqueOrThrow({
+    where: { companyId_employeeCode: { companyId, employeeCode: 'EMP004' } },
+  });
+  const ayesha = await prisma.employee.findUniqueOrThrow({
+    where: { companyId_employeeCode: { companyId, employeeCode: 'EMP003' } },
   });
 
   const existingContact = await prisma.employeeEmergencyContact.findFirst({
@@ -524,8 +587,126 @@ async function seed(): Promise<void> {
     });
   }
 
+  const generalShift = await prisma.shift.upsert({
+    where: { companyId_code: { companyId, code: 'GEN' } },
+    update: {
+      name: 'General Shift',
+      startTime: '09:00',
+      endTime: '18:00',
+      isDefault: true,
+      isActive: true,
+    },
+    create: {
+      companyId,
+      name: 'General Shift',
+      code: 'GEN',
+      startTime: '09:00',
+      endTime: '18:00',
+      breakMinutes: 60,
+      graceMinutes: 15,
+      isDefault: true,
+    },
+  });
+
+  await prisma.shift.upsert({
+    where: { companyId_code: { companyId, code: 'FLEX' } },
+    update: { name: 'Flexible Hours', startTime: '10:00', endTime: '19:00' },
+    create: {
+      companyId,
+      name: 'Flexible Hours',
+      code: 'FLEX',
+      startTime: '10:00',
+      endTime: '19:00',
+      breakMinutes: 60,
+      graceMinutes: 30,
+    },
+  });
+
+  const holidayDate = new Date(Date.UTC(new Date().getUTCFullYear(), 7, 14));
+  await prisma.holiday.upsert({
+    where: { companyId_date: { companyId, date: holidayDate } },
+    update: { name: 'Independence Day' },
+    create: {
+      companyId,
+      name: 'Independence Day',
+      date: holidayDate,
+      description: 'Pakistan Independence Day',
+    },
+  });
+
+  const today = new Date();
+  const dayUtc = (offset: number) => {
+    const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - offset));
+    return d;
+  };
+
+  const seedAttendance = async (
+    employeeId: string,
+    day: Date,
+    status: 'PRESENT' | 'LATE' | 'ABSENT' | 'REMOTE',
+    checkInHour: number | null,
+    checkOutHour: number | null,
+    lateMinutes = 0,
+  ) => {
+    const existing = await prisma.attendanceRecord.findFirst({
+      where: { companyId, employeeId, date: day },
+    });
+    if (existing) return;
+    const checkInAt =
+      checkInHour === null
+        ? null
+        : new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), checkInHour, lateMinutes, 0));
+    const checkOutAt =
+      checkOutHour === null
+        ? null
+        : new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), checkOutHour, 0, 0));
+    const workMinutes =
+      checkInAt && checkOutAt
+        ? Math.max(0, Math.round((checkOutAt.getTime() - checkInAt.getTime()) / 60000) - 60)
+        : 0;
+    await prisma.attendanceRecord.create({
+      data: {
+        companyId,
+        employeeId,
+        date: day,
+        shiftId: generalShift.id,
+        checkInAt,
+        checkOutAt,
+        status,
+        workMinutes,
+        overtimeMinutes: workMinutes > 480 ? workMinutes - 480 : 0,
+        lateMinutes,
+        source: 'SYSTEM',
+      },
+    });
+  };
+
+  await seedAttendance(manager.id, dayUtc(0), 'PRESENT', 9, 18);
+  await seedAttendance(engineer.id, dayUtc(0), 'LATE', 9, 18, 25);
+  await seedAttendance(ayesha.id, dayUtc(0), 'REMOTE', 10, 18);
+  await seedAttendance(hrEmployee.id, dayUtc(1), 'PRESENT', 9, 18);
+  await seedAttendance(engineer.id, dayUtc(1), 'PRESENT', 9, 18);
+  await seedAttendance(ayesha.id, dayUtc(1), 'ABSENT', null, null);
+
+  const overtimeExists = await prisma.overtimeRequest.findFirst({
+    where: { companyId, employeeId: engineer.id, status: 'PENDING' },
+  });
+  if (!overtimeExists) {
+    await prisma.overtimeRequest.create({
+      data: {
+        companyId,
+        employeeId: engineer.id,
+        date: dayUtc(0),
+        minutes: 90,
+        reason: 'Release hotfix support',
+        status: 'PENDING',
+      },
+    });
+  }
+
   console.log('Seed completed successfully.');
   console.log('Demo admin: admin@zenith.local / Password123! (local/dev only)');
+  console.log('Demo employee: employee@zenith.local / Password123! (local/dev only)');
 }
 
 seed()

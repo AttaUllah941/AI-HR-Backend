@@ -242,7 +242,7 @@ export class DashboardService {
       modules: {
         organization: true,
         employees: true,
-        attendance: false,
+        attendance: true,
         leave: false,
         payroll: false,
         recruitment: false,
