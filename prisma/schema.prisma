@@ -48,6 +48,10 @@ model Company {
   holidays      Holiday[]
   attendanceRecords AttendanceRecord[]
   overtimeRequests  OvertimeRequest[]
+  leaveTypes        LeaveType[]
+  leavePolicies     LeavePolicy[]
+  leaveBalances     LeaveBalance[]
+  leaveRequests     LeaveRequest[]
 
   @@map("companies")
 }
@@ -409,6 +413,8 @@ model Employee {
   documents         EmployeeDocument[]
   attendanceRecords AttendanceRecord[]
   overtimeRequests  OvertimeRequest[]
+  leaveBalances     LeaveBalance[]
+  leaveRequests     LeaveRequest[]
 
   @@unique([companyId, employeeCode])
   @@unique([companyId, email])
@@ -660,4 +666,111 @@ model OvertimeRequest {
   @@index([employeeId, date])
   @@index([deletedAt])
   @@map("overtime_requests")
+}
+
+enum LeaveRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum LeaveDayType {
+  FULL_DAY
+  HALF_DAY_AM
+  HALF_DAY_PM
+}
+
+model LeaveType {
+  id               String    @id @default(cuid())
+  companyId        String
+  name             String
+  code             String
+  description      String?
+  color            String    @default("#3b82f6")
+  isPaid           Boolean   @default(true)
+  requiresApproval Boolean   @default(true)
+  allowHalfDay     Boolean   @default(true)
+  maxDaysPerYear   Int       @default(0)
+  carryForwardDays Int       @default(0)
+  isActive         Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  company  Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  balances LeaveBalance[]
+  requests LeaveRequest[]
+
+  @@unique([companyId, code])
+  @@index([companyId])
+  @@index([deletedAt])
+  @@map("leave_types")
+}
+
+model LeavePolicy {
+  id                   String   @id @default(cuid())
+  companyId            String   @unique
+  allowNegativeBalance Boolean  @default(false)
+  countWeekends        Boolean  @default(false)
+  countHolidays        Boolean  @default(false)
+  minNoticeDays        Int      @default(0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("leave_policies")
+}
+
+model LeaveBalance {
+  id             String   @id @default(cuid())
+  companyId      String
+  employeeId     String
+  leaveTypeId    String
+  year           Int
+  entitled       Float    @default(0)
+  used           Float    @default(0)
+  pending        Float    @default(0)
+  carriedForward Float    @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  employee  Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  leaveType LeaveType @relation(fields: [leaveTypeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, leaveTypeId, year])
+  @@index([companyId, year])
+  @@index([employeeId])
+  @@map("leave_balances")
+}
+
+model LeaveRequest {
+  id           String             @id @default(cuid())
+  companyId    String
+  employeeId   String
+  leaveTypeId  String
+  startDate    DateTime
+  endDate      DateTime
+  dayType      LeaveDayType       @default(FULL_DAY)
+  days         Float
+  reason       String?
+  status       LeaveRequestStatus @default(PENDING)
+  reviewedBy   String?
+  reviewedAt   DateTime?
+  reviewNotes  String?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  deletedAt    DateTime?
+
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  employee  Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  leaveType LeaveType @relation(fields: [leaveTypeId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, status])
+  @@index([employeeId, startDate])
+  @@index([leaveTypeId])
+  @@index([deletedAt])
+  @@map("leave_requests")
 }

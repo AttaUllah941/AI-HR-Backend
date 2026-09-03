@@ -243,7 +243,7 @@ export class DashboardService {
         organization: true,
         employees: true,
         attendance: true,
-        leave: false,
+        leave: true,
         payroll: false,
         recruitment: false,
         performance: false,

@@ -704,6 +704,128 @@ async function seed(): Promise<void> {
     });
   }
 
+  // —— Phase 7 Leave ——
+  await prisma.leavePolicy.upsert({
+    where: { companyId },
+    update: {},
+    create: {
+      companyId,
+      allowNegativeBalance: false,
+      countWeekends: false,
+      countHolidays: false,
+      minNoticeDays: 0,
+    },
+  });
+
+  const annualLeave = await prisma.leaveType.upsert({
+    where: { companyId_code: { companyId, code: 'ANNUAL' } },
+    update: { name: 'Annual Leave', isActive: true },
+    create: {
+      companyId,
+      name: 'Annual Leave',
+      code: 'ANNUAL',
+      description: 'Paid annual vacation leave',
+      color: '#3b82f6',
+      isPaid: true,
+      requiresApproval: true,
+      allowHalfDay: true,
+      maxDaysPerYear: 20,
+      carryForwardDays: 5,
+    },
+  });
+
+  const sickLeave = await prisma.leaveType.upsert({
+    where: { companyId_code: { companyId, code: 'SICK' } },
+    update: { name: 'Sick Leave', isActive: true },
+    create: {
+      companyId,
+      name: 'Sick Leave',
+      code: 'SICK',
+      description: 'Medical / sick leave',
+      color: '#ef4444',
+      isPaid: true,
+      requiresApproval: true,
+      allowHalfDay: true,
+      maxDaysPerYear: 10,
+      carryForwardDays: 0,
+    },
+  });
+
+  const casualLeave = await prisma.leaveType.upsert({
+    where: { companyId_code: { companyId, code: 'CASUAL' } },
+    update: { name: 'Casual Leave', isActive: true },
+    create: {
+      companyId,
+      name: 'Casual Leave',
+      code: 'CASUAL',
+      description: 'Short-notice personal leave',
+      color: '#22c55e',
+      isPaid: true,
+      requiresApproval: false,
+      allowHalfDay: true,
+      maxDaysPerYear: 5,
+      carryForwardDays: 0,
+    },
+  });
+
+  const leaveYear = new Date().getUTCFullYear();
+  const seedBalance = async (employeeId: string, leaveTypeId: string, entitled: number) => {
+    await prisma.leaveBalance.upsert({
+      where: {
+        employeeId_leaveTypeId_year: { employeeId, leaveTypeId, year: leaveYear },
+      },
+      update: { entitled },
+      create: {
+        companyId,
+        employeeId,
+        leaveTypeId,
+        year: leaveYear,
+        entitled,
+        used: 0,
+        pending: 0,
+        carriedForward: 0,
+      },
+    });
+  };
+
+  for (const emp of [manager, engineer, ayesha, hrEmployee]) {
+    await seedBalance(emp.id, annualLeave.id, 20);
+    await seedBalance(emp.id, sickLeave.id, 10);
+    await seedBalance(emp.id, casualLeave.id, 5);
+  }
+
+  const pendingLeave = await prisma.leaveRequest.findFirst({
+    where: { companyId, employeeId: engineer.id, status: 'PENDING', deletedAt: null },
+  });
+  if (!pendingLeave) {
+    // dayUtc(n) = today − n days; start must be on or before end
+    const start = dayUtc(6);
+    const end = dayUtc(5);
+    await prisma.leaveRequest.create({
+      data: {
+        companyId,
+        employeeId: engineer.id,
+        leaveTypeId: annualLeave.id,
+        startDate: start,
+        endDate: end,
+        dayType: 'FULL_DAY',
+        days: 2,
+        reason: 'Family event',
+        status: 'PENDING',
+      },
+    });
+    await prisma.leaveBalance.update({
+      where: {
+        employeeId_leaveTypeId_year: {
+          employeeId: engineer.id,
+          leaveTypeId: annualLeave.id,
+          year: leaveYear,
+        },
+      },
+      data: { pending: { increment: 2 } },
+    });
+  }
+
   console.log('Seed completed successfully.');
   console.log('Demo admin: admin@zenith.local / Password123! (local/dev only)');
   console.log('Demo employee: employee@zenith.local / Password123! (local/dev only)');
