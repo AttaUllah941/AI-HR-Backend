@@ -1,11 +1,23 @@
 import { z } from 'zod';
 
+const passwordSchema = z
+  .string()
+  .min(8)
+  .max(128)
+  .regex(/[A-Za-z]/, 'Password must include a letter')
+  .regex(/[0-9]/, 'Password must include a number');
+
+const optionalCompanyName = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z.string().min(1).max(200).optional(),
+);
+
 export const registerSchema = z.object({
   email: z.string().email().max(255),
-  password: z.string().min(8).max(128),
+  password: passwordSchema,
   firstName: z.string().min(1).max(100),
   lastName: z.string().min(1).max(100),
-  companyName: z.string().min(1).max(200).optional(),
+  companyName: optionalCompanyName,
 });
 
 export const loginSchema = z.object({
@@ -24,7 +36,7 @@ export const forgotPasswordSchema = z.object({
 
 export const resetPasswordSchema = z.object({
   token: z.string().min(1),
-  password: z.string().min(8).max(128),
+  password: passwordSchema,
 });
 
 export const verifyEmailSchema = z.object({

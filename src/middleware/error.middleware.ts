@@ -47,6 +47,20 @@ export function errorHandler(
       res.status(404).json(errorResponse('Record not found', { code: 'NOT_FOUND' }));
       return;
     }
+
+    if (isDatabaseUnavailableError(err)) {
+      respondDatabaseUnavailable(res, err);
+      return;
+    }
+  }
+
+  if (
+    err instanceof Prisma.PrismaClientInitializationError ||
+    err instanceof Prisma.PrismaClientRustPanicError ||
+    isDatabaseUnavailableError(err)
+  ) {
+    respondDatabaseUnavailable(res, err);
+    return;
   }
 
   logger.error('Unhandled error', {
@@ -59,5 +73,37 @@ export function errorHandler(
       code: 'INTERNAL_ERROR',
       errors: isProduction ? undefined : err instanceof Error ? err.message : err,
     }),
+  );
+}
+
+const DATABASE_UNAVAILABLE_CODES = new Set(['P1000', 'P1001', 'P1002', 'P1003', 'P1017', 'P2024']);
+
+function isDatabaseUnavailableError(err: unknown): boolean {
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    if (DATABASE_UNAVAILABLE_CODES.has(err.code)) {
+      return true;
+    }
+  }
+
+  const message = err instanceof Error ? err.message : String(err);
+  return /can't reach database|econnrefused|connection terminated|connection timeout|server closed the connection|not yet connected|database system is starting/i.test(
+    message,
+  );
+}
+
+function respondDatabaseUnavailable(res: Response, err: unknown): void {
+  logger.error('Database unavailable', {
+    error: err instanceof Error ? err.message : String(err),
+    code: err instanceof Prisma.PrismaClientKnownRequestError ? err.code : undefined,
+  });
+
+  res.status(503).json(
+    errorResponse(
+      'Database unavailable. Start PostgreSQL with `npm run db:up` and keep that process running.',
+      {
+        code: 'DATABASE_UNAVAILABLE',
+        errors: isProduction ? undefined : err instanceof Error ? err.message : err,
+      },
+    ),
   );
 }
