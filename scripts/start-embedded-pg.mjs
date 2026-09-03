@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const databaseDir = path.join(root, '..', 'data', 'pg');
+const databaseDir = path.join(root, '..', 'data', 'pg_fresh');
 
 mkdirSync(databaseDir, { recursive: true });
 

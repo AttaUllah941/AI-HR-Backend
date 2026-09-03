@@ -6,6 +6,7 @@ Express + TypeScript + Prisma API for the Zenith Enterprise AI HR platform.
 
 | Command | Description |
 |---|---|
+| `npm run db:up` | Start embedded PostgreSQL (keep this terminal open) |
 | `npm run dev` | Start API with hot reload (`tsx watch`) |
 | `npm run build` | Compile TypeScript to `dist/` |
 | `npm start` | Run compiled server |
@@ -13,6 +14,15 @@ Express + TypeScript + Prisma API for the Zenith Enterprise AI HR platform.
 | `npm run prisma:migrate` | Run migrations (dev) |
 | `npm run prisma:seed` | Seed roles, permissions, company |
 | `npm run lint` | Typecheck |
+
+## Local database
+
+1. Copy `.env.example` to `.env` if needed.
+2. In one terminal: `npm run db:up` (must stay running).
+3. In another: `npm run prisma:migrate` then `npm run prisma:seed` (first setup).
+4. Start the API: `npm run dev`.
+
+Auth and other Prisma queries fail with cryptic `findFirst` errors if Postgres is stopped or crashed. Restart with `npm run db:up` before retrying.
 
 ## Architecture
 
@@ -111,12 +121,30 @@ All require auth. View uses `attendance:view`; clock/create uses `attendance:cre
 | POST | `/api/v1/attendance/overtime/:id/approve` | Approve overtime |
 | POST | `/api/v1/attendance/overtime/:id/reject` | Reject overtime |
 
+## Phase 7 leave endpoints
+
+All require auth. View uses `leave:view`; apply/cancel uses `leave:create`; types/balances/policy use `leave:update`; approve/reject uses `leave:approve`.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/leave/me/summary` | Current user’s leave balances & KPIs |
+| GET | `/api/v1/leave/calendar` | Leave calendar events (`from`/`to`) |
+| GET | `/api/v1/leave/report` | Status aggregation report |
+| GET/POST/PATCH/DELETE | `/api/v1/leave/types` | Leave type management |
+| GET/PATCH | `/api/v1/leave/policy` | Company leave policy |
+| GET/POST | `/api/v1/leave/balances` | Leave balances / upsert entitlement |
+| GET/POST/PATCH | `/api/v1/leave/requests` | Leave request list/create/update |
+| GET | `/api/v1/leave/requests/:id` | Single leave request |
+| POST | `/api/v1/leave/requests/:id/approve` | Approve leave |
+| POST | `/api/v1/leave/requests/:id/reject` | Reject leave |
+| POST | `/api/v1/leave/requests/:id/cancel` | Cancel leave |
+
 ### Seeded demo user
 
 After `npm run prisma:seed`:
 
-- Email: `admin@zenith.local`
-- Password: `Password123!`
+- Admin: `admin@zenith.local` / `Password123!`
+- Employee: `employee@zenith.local` / `Password123!`
 
 ## Docker
 
