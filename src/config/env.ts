@@ -17,6 +17,11 @@ const envSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900_000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(200),
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'http', 'debug']).default('info'),
+  // AI — keys stay server-side only; mock works without a key
+  AI_PROVIDER: z.enum(['mock', 'openai']).default('mock'),
+  AI_API_KEY: z.string().optional().default(''),
+  AI_BASE_URL: z.string().optional().default('https://api.openai.com/v1'),
+  AI_MODEL: z.string().optional().default('gpt-4o-mini'),
 });
 
 const parsed = envSchema.safeParse(process.env);

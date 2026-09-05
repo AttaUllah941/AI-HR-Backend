@@ -57,17 +57,23 @@ const ROLE_PERMISSION_CODES: Record<string, 'ALL' | string[]> = {
     'leave:approve',
     'leave:export',
     'payroll:view',
+    'payroll:create',
+    'payroll:update',
+    'payroll:approve',
+    'payroll:delete',
     'payroll:export',
     'recruitment:view',
     'recruitment:create',
     'recruitment:update',
     'recruitment:approve',
+    'recruitment:delete',
     'performance:view',
     'performance:create',
     'performance:update',
     'performance:approve',
     'ai:view',
     'ai:create',
+    'ai:delete',
     'reports:view',
     'reports:export',
     'notifications:view',
@@ -86,9 +92,11 @@ const ROLE_PERMISSION_CODES: Record<string, 'ALL' | string[]> = {
     'recruitment:view',
     'recruitment:create',
     'recruitment:update',
-    'recruitment:manage',
+    'recruitment:approve',
+    'recruitment:delete',
     'ai:view',
     'ai:create',
+    'ai:delete',
     'reports:view',
     'notifications:view',
     'files:view',
@@ -108,6 +116,7 @@ const ROLE_PERMISSION_CODES: Record<string, 'ALL' | string[]> = {
     'performance:create',
     'performance:update',
     'performance:approve',
+    'ai:view',
     'reports:view',
     'notifications:view',
     'files:view',
@@ -823,6 +832,1133 @@ async function seed(): Promise<void> {
         },
       },
       data: { pending: { increment: 2 } },
+    });
+  }
+
+  // —— Phase 8 Payroll ——
+  const upsertComponent = async (input: {
+    code: string;
+    name: string;
+    kind: 'ALLOWANCE' | 'DEDUCTION' | 'BONUS' | 'TAX';
+    calcType?: 'FIXED' | 'PERCENT_OF_BASIC';
+    defaultValue: number;
+    isTaxable?: boolean;
+  }) =>
+    prisma.salaryComponent.upsert({
+      where: { companyId_code: { companyId, code: input.code } },
+      update: {
+        name: input.name,
+        kind: input.kind,
+        calcType: input.calcType ?? 'FIXED',
+        defaultValue: input.defaultValue,
+        isTaxable: input.isTaxable ?? true,
+        isActive: true,
+        deletedAt: null,
+      },
+      create: {
+        companyId,
+        code: input.code,
+        name: input.name,
+        kind: input.kind,
+        calcType: input.calcType ?? 'FIXED',
+        defaultValue: input.defaultValue,
+        isTaxable: input.isTaxable ?? true,
+        isActive: true,
+      },
+    });
+
+  const housing = await upsertComponent({
+    code: 'HRA',
+    name: 'Housing Allowance',
+    kind: 'ALLOWANCE',
+    calcType: 'PERCENT_OF_BASIC',
+    defaultValue: 40,
+    isTaxable: true,
+  });
+  const transport = await upsertComponent({
+    code: 'TRANSPORT',
+    name: 'Transport Allowance',
+    kind: 'ALLOWANCE',
+    calcType: 'FIXED',
+    defaultValue: 150,
+    isTaxable: false,
+  });
+  const medical = await upsertComponent({
+    code: 'MEDICAL',
+    name: 'Medical Allowance',
+    kind: 'ALLOWANCE',
+    calcType: 'FIXED',
+    defaultValue: 100,
+    isTaxable: false,
+  });
+  const pf = await upsertComponent({
+    code: 'PF',
+    name: 'Provident Fund',
+    kind: 'DEDUCTION',
+    calcType: 'PERCENT_OF_BASIC',
+    defaultValue: 5,
+    isTaxable: false,
+  });
+  const performanceBonus = await upsertComponent({
+    code: 'PERF_BONUS',
+    name: 'Performance Bonus',
+    kind: 'BONUS',
+    calcType: 'FIXED',
+    defaultValue: 0,
+    isTaxable: true,
+  });
+
+  const taxYear = new Date().getUTCFullYear();
+  await prisma.taxSetting.upsert({
+    where: { companyId },
+    update: {
+      taxYear,
+      standardRate: 10,
+      personalAllowance: 12_000,
+      notes: 'Demo flat-rate tax settings',
+    },
+    create: {
+      companyId,
+      taxYear,
+      standardRate: 10,
+      personalAllowance: 12_000,
+      notes: 'Demo flat-rate tax settings',
+    },
+  });
+
+  const seedStructure = async (
+    employeeId: string,
+    basicSalary: number,
+    extras: { componentId: string; value: number }[],
+  ) => {
+    const existing = await prisma.salaryStructure.findFirst({
+      where: { companyId, employeeId, deletedAt: null, isActive: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (existing) {
+      await prisma.salaryStructureItem.deleteMany({ where: { salaryStructureId: existing.id } });
+      await prisma.salaryStructure.update({
+        where: { id: existing.id },
+        data: {
+          basicSalary,
+          currency: 'USD',
+          effectiveFrom: new Date(`${taxYear}-01-01T00:00:00.000Z`),
+          isActive: true,
+        },
+      });
+      if (extras.length) {
+        await prisma.salaryStructureItem.createMany({
+          data: extras.map((item) => ({
+            salaryStructureId: existing.id,
+            componentId: item.componentId,
+            value: item.value,
+          })),
+        });
+      }
+      return existing;
+    }
+    return prisma.salaryStructure.create({
+      data: {
+        companyId,
+        employeeId,
+        basicSalary,
+        currency: 'USD',
+        effectiveFrom: new Date(`${taxYear}-01-01T00:00:00.000Z`),
+        isActive: true,
+        components: {
+          create: extras.map((item) => ({
+            componentId: item.componentId,
+            value: item.value,
+          })),
+        },
+      },
+    });
+  };
+
+  const commonComponents = (bonus = 0) => [
+    { componentId: housing.id, value: 40 },
+    { componentId: transport.id, value: 150 },
+    { componentId: medical.id, value: 100 },
+    { componentId: pf.id, value: 5 },
+    ...(bonus > 0 ? [{ componentId: performanceBonus.id, value: bonus }] : []),
+  ];
+
+  await seedStructure(manager.id, 6000, commonComponents(200));
+  await seedStructure(engineer.id, 4500, commonComponents(150));
+  await seedStructure(ayesha.id, 3200, commonComponents());
+  await seedStructure(hrEmployee.id, 5500, commonComponents(100));
+
+  const prevMonthDate = new Date();
+  prevMonthDate.setUTCMonth(prevMonthDate.getUTCMonth() - 1);
+  const completedYear = prevMonthDate.getUTCFullYear();
+  const completedMonth = prevMonthDate.getUTCMonth() + 1;
+  const draftMonthDate = new Date();
+  const draftYear = draftMonthDate.getUTCFullYear();
+  const draftMonth = draftMonthDate.getUTCMonth() + 1;
+
+  const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+  const ensureCompletedRun = async () => {
+    let run = await prisma.payrollRun.findFirst({
+      where: {
+        companyId,
+        year: completedYear,
+        month: completedMonth,
+        deletedAt: null,
+      },
+    });
+    if (!run) {
+      run = await prisma.payrollRun.create({
+        data: {
+          companyId,
+          year: completedYear,
+          month: completedMonth,
+          title: `Payroll ${completedYear}-${String(completedMonth).padStart(2, '0')}`,
+          status: 'DRAFT',
+          notes: 'Seeded completed payroll run',
+        },
+      });
+    }
+
+    const entryCount = await prisma.payrollEntry.count({ where: { payrollRunId: run.id } });
+    if (entryCount > 0) {
+      if (run.status === 'DRAFT') {
+        await prisma.payrollRun.update({
+          where: { id: run.id },
+          data: { status: 'COMPLETED', processedAt: new Date() },
+        });
+      }
+      return;
+    }
+
+    const structures = await prisma.salaryStructure.findMany({
+      where: { companyId, deletedAt: null, isActive: true },
+      include: { components: { include: { component: true } } },
+    });
+    if (!structures.length) return;
+
+    const tax = await prisma.taxSetting.findUnique({ where: { companyId } });
+    const rate = tax?.standardRate ?? 10;
+    const allowanceMonthly = (tax?.personalAllowance ?? 12_000) / 12;
+
+    for (const structure of structures) {
+      const basic = round2(structure.basicSalary);
+      let totalAllowances = 0;
+      let totalBonuses = 0;
+      let totalDeductions = 0;
+      let totalTax = 0;
+      let taxableAllowances = 0;
+      let hasTaxComponent = false;
+      const lines: {
+        componentId: string | null;
+        kind: 'ALLOWANCE' | 'DEDUCTION' | 'BONUS' | 'TAX';
+        label: string;
+        amount: number;
+      }[] = [];
+
+      for (const item of structure.components) {
+        const c = item.component;
+        if (!c.isActive || c.deletedAt) continue;
+        const amount =
+          c.calcType === 'PERCENT_OF_BASIC'
+            ? round2((basic * item.value) / 100)
+            : round2(item.value);
+        if (amount === 0) continue;
+        lines.push({ componentId: c.id, kind: c.kind, label: c.name, amount });
+        if (c.kind === 'ALLOWANCE') {
+          totalAllowances = round2(totalAllowances + amount);
+          if (c.isTaxable) taxableAllowances = round2(taxableAllowances + amount);
+        } else if (c.kind === 'BONUS') {
+          totalBonuses = round2(totalBonuses + amount);
+        } else if (c.kind === 'DEDUCTION') {
+          totalDeductions = round2(totalDeductions + amount);
+        } else if (c.kind === 'TAX') {
+          totalTax = round2(totalTax + amount);
+          hasTaxComponent = true;
+        }
+      }
+
+      if (rate > 0 && !hasTaxComponent) {
+        const taxable = Math.max(0, round2(basic + taxableAllowances + totalBonuses - allowanceMonthly));
+        const incomeTax = round2((taxable * rate) / 100);
+        if (incomeTax > 0) {
+          lines.push({
+            componentId: null,
+            kind: 'TAX',
+            label: 'Income Tax',
+            amount: incomeTax,
+          });
+          totalTax = round2(totalTax + incomeTax);
+        }
+      }
+
+      const grossPay = round2(basic + totalAllowances + totalBonuses);
+      const netPay = round2(grossPay - totalDeductions - totalTax);
+
+      const entry = await prisma.payrollEntry.create({
+        data: {
+          companyId,
+          payrollRunId: run.id,
+          employeeId: structure.employeeId,
+          basicSalary: basic,
+          totalAllowances,
+          totalBonuses,
+          totalDeductions,
+          totalTax,
+          grossPay,
+          netPay,
+          lines: { create: lines },
+        },
+      });
+
+      await prisma.payslip.create({
+        data: {
+          companyId,
+          employeeId: structure.employeeId,
+          payrollEntryId: entry.id,
+          year: completedYear,
+          month: completedMonth,
+          basicSalary: basic,
+          totalAllowances,
+          totalBonuses,
+          totalDeductions,
+          totalTax,
+          grossPay,
+          netPay,
+          currency: structure.currency,
+          status: 'GENERATED',
+        },
+      });
+    }
+
+    await prisma.payrollRun.update({
+      where: { id: run.id },
+      data: { status: 'COMPLETED', processedAt: new Date() },
+    });
+  };
+
+  await ensureCompletedRun();
+
+  const draftExists = await prisma.payrollRun.findFirst({
+    where: {
+      companyId,
+      year: draftYear,
+      month: draftMonth,
+      deletedAt: null,
+    },
+  });
+  if (!draftExists && !(draftYear === completedYear && draftMonth === completedMonth)) {
+    await prisma.payrollRun.create({
+      data: {
+        companyId,
+        year: draftYear,
+        month: draftMonth,
+        title: `Payroll ${draftYear}-${String(draftMonth).padStart(2, '0')}`,
+        status: 'DRAFT',
+        notes: 'Seeded draft payroll run',
+      },
+    });
+  }
+
+  // —— Phase 9 Recruitment ——
+  const openJob = await prisma.jobOpening.upsert({
+    where: { companyId_code: { companyId, code: 'ENG-SSE-01' } },
+    update: {
+      title: 'Senior Software Engineer',
+      description: 'Build and scale Zenith HR platform services.',
+      requirements: '5+ years TypeScript/Node, PostgreSQL, REST APIs.',
+      employmentType: 'FULL_TIME',
+      location: 'Karachi — Hybrid',
+      openings: 2,
+      status: 'OPEN',
+      departmentId: engDept.id,
+      designationId: sseDesignation.id,
+      branchId: headOffice.id,
+      hiringManagerId: manager.id,
+      salaryMin: 4500,
+      salaryMax: 6500,
+      currency: 'USD',
+      publishedAt: new Date(),
+      closedAt: null,
+      deletedAt: null,
+    },
+    create: {
+      companyId,
+      title: 'Senior Software Engineer',
+      code: 'ENG-SSE-01',
+      description: 'Build and scale Zenith HR platform services.',
+      requirements: '5+ years TypeScript/Node, PostgreSQL, REST APIs.',
+      employmentType: 'FULL_TIME',
+      location: 'Karachi — Hybrid',
+      openings: 2,
+      status: 'OPEN',
+      departmentId: engDept.id,
+      designationId: sseDesignation.id,
+      branchId: headOffice.id,
+      hiringManagerId: manager.id,
+      salaryMin: 4500,
+      salaryMax: 6500,
+      currency: 'USD',
+      publishedAt: new Date(),
+    },
+  });
+
+  await prisma.jobOpening.upsert({
+    where: { companyId_code: { companyId, code: 'HR-BP-01' } },
+    update: {
+      title: 'HR Business Partner',
+      description: 'Partner with leaders on talent and employee experience.',
+      requirements: '3+ years HRBP experience; strong communication.',
+      employmentType: 'FULL_TIME',
+      location: 'Karachi — Head Office',
+      openings: 1,
+      status: 'DRAFT',
+      departmentId: hrDept.id,
+      designationId: mgrDesignation.id,
+      branchId: headOffice.id,
+      hiringManagerId: hrEmployee.id,
+      salaryMin: 3500,
+      salaryMax: 5000,
+      currency: 'USD',
+      publishedAt: null,
+      closedAt: null,
+      deletedAt: null,
+    },
+    create: {
+      companyId,
+      title: 'HR Business Partner',
+      code: 'HR-BP-01',
+      description: 'Partner with leaders on talent and employee experience.',
+      requirements: '3+ years HRBP experience; strong communication.',
+      employmentType: 'FULL_TIME',
+      location: 'Karachi — Head Office',
+      openings: 1,
+      status: 'DRAFT',
+      departmentId: hrDept.id,
+      designationId: mgrDesignation.id,
+      branchId: headOffice.id,
+      hiringManagerId: hrEmployee.id,
+      salaryMin: 3500,
+      salaryMax: 5000,
+      currency: 'USD',
+    },
+  });
+
+  const upsertCandidate = async (input: {
+    email: string;
+    firstName: string;
+    lastName: string;
+    phone: string;
+    source: string;
+    currentTitle: string;
+    currentCompany: string;
+    yearsExperience: number;
+    resumeFileName: string;
+    screeningScore?: number;
+    screeningNotes?: string;
+  }) =>
+    prisma.candidate.upsert({
+      where: { companyId_email: { companyId, email: input.email } },
+      update: {
+        firstName: input.firstName,
+        lastName: input.lastName,
+        phone: input.phone,
+        source: input.source,
+        currentTitle: input.currentTitle,
+        currentCompany: input.currentCompany,
+        yearsExperience: input.yearsExperience,
+        resumeUrl: `https://files.zenith.local/resumes/${input.resumeFileName}`,
+        resumeFileName: input.resumeFileName,
+        resumeMimeType: 'application/pdf',
+        screeningScore: input.screeningScore ?? null,
+        screeningNotes: input.screeningNotes ?? null,
+        deletedAt: null,
+      },
+      create: {
+        companyId,
+        firstName: input.firstName,
+        lastName: input.lastName,
+        email: input.email,
+        phone: input.phone,
+        source: input.source,
+        currentTitle: input.currentTitle,
+        currentCompany: input.currentCompany,
+        yearsExperience: input.yearsExperience,
+        resumeUrl: `https://files.zenith.local/resumes/${input.resumeFileName}`,
+        resumeFileName: input.resumeFileName,
+        resumeMimeType: 'application/pdf',
+        screeningScore: input.screeningScore ?? null,
+        screeningNotes: input.screeningNotes ?? null,
+      },
+    });
+
+  const candOmar = await upsertCandidate({
+    email: 'omar.rizvi@example.com',
+    firstName: 'Omar',
+    lastName: 'Rizvi',
+    phone: '+92-300-5550001',
+    source: 'LinkedIn',
+    currentTitle: 'Software Engineer',
+    currentCompany: 'NovaTech',
+    yearsExperience: 6,
+    resumeFileName: 'omar-rizvi-resume.pdf',
+    screeningScore: 82,
+    screeningNotes: 'Strong backend focus; good culture fit signal.',
+  });
+  const candHina = await upsertCandidate({
+    email: 'hina.ahmed@example.com',
+    firstName: 'Hina',
+    lastName: 'Ahmed',
+    phone: '+92-300-5550002',
+    source: 'Referral',
+    currentTitle: 'Senior Frontend Engineer',
+    currentCompany: 'Pixel Labs',
+    yearsExperience: 7,
+    resumeFileName: 'hina-ahmed-resume.pdf',
+    screeningScore: 88,
+    screeningNotes: 'Excellent TypeScript/Angular experience.',
+  });
+  const candBilal = await upsertCandidate({
+    email: 'bilal.sheikh@example.com',
+    firstName: 'Bilal',
+    lastName: 'Sheikh',
+    phone: '+92-300-5550003',
+    source: 'Careers page',
+    currentTitle: 'Full Stack Developer',
+    currentCompany: 'CloudBridge',
+    yearsExperience: 4,
+    resumeFileName: 'bilal-sheikh-resume.pdf',
+    screeningScore: 74,
+  });
+
+  const ensureApplication = async (input: {
+    candidateId: string;
+    status: 'APPLIED' | 'SCREENING' | 'INTERVIEW' | 'OFFER' | 'HIRED' | 'REJECTED' | 'WITHDRAWN';
+    coverLetter?: string;
+    rejectionReason?: string;
+  }) => {
+    const existing = await prisma.jobApplication.findFirst({
+      where: {
+        companyId,
+        jobOpeningId: openJob.id,
+        candidateId: input.candidateId,
+        deletedAt: null,
+      },
+    });
+    if (existing) {
+      return prisma.jobApplication.update({
+        where: { id: existing.id },
+        data: {
+          status: input.status,
+          coverLetter: input.coverLetter ?? existing.coverLetter,
+          rejectionReason: input.rejectionReason ?? null,
+          stageChangedAt: new Date(),
+        },
+      });
+    }
+    return prisma.jobApplication.create({
+      data: {
+        companyId,
+        jobOpeningId: openJob.id,
+        candidateId: input.candidateId,
+        status: input.status,
+        coverLetter: input.coverLetter ?? null,
+        rejectionReason: input.rejectionReason ?? null,
+      },
+    });
+  };
+
+  const appOmar = await ensureApplication({
+    candidateId: candOmar.id,
+    status: 'INTERVIEW',
+    coverLetter: 'Excited to contribute to Zenith HR backend services.',
+  });
+  const appHina = await ensureApplication({
+    candidateId: candHina.id,
+    status: 'OFFER',
+    coverLetter: 'Looking forward to joining the product engineering team.',
+  });
+  await ensureApplication({
+    candidateId: candBilal.id,
+    status: 'SCREENING',
+    coverLetter: 'Passionate about full-stack product work.',
+  });
+
+  const existingInterview = await prisma.interview.findFirst({
+    where: { companyId, applicationId: appOmar.id, deletedAt: null },
+  });
+  if (!existingInterview) {
+    await prisma.interview.create({
+      data: {
+        companyId,
+        applicationId: appOmar.id,
+        type: 'TECHNICAL',
+        status: 'SCHEDULED',
+        scheduledAt: new Date(Date.now() + 3 * 86_400_000),
+        durationMinutes: 60,
+        locationOrLink: 'https://meet.zenith.local/omar-tech',
+        interviewerId: manager.id,
+      },
+    });
+  }
+
+  const existingHrInterview = await prisma.interview.findFirst({
+    where: { companyId, applicationId: appHina.id, deletedAt: null },
+  });
+  if (!existingHrInterview) {
+    await prisma.interview.create({
+      data: {
+        companyId,
+        applicationId: appHina.id,
+        type: 'HR',
+        status: 'COMPLETED',
+        scheduledAt: new Date(Date.now() - 5 * 86_400_000),
+        durationMinutes: 45,
+        locationOrLink: 'Head Office — Meeting Room B',
+        interviewerId: hrEmployee.id,
+        feedback: 'Clear communicator; aligns with team values.',
+        rating: 4.5,
+      },
+    });
+  }
+
+  const existingOffer = await prisma.jobOffer.findFirst({
+    where: { companyId, applicationId: appHina.id, deletedAt: null },
+  });
+  if (!existingOffer) {
+    await prisma.jobOffer.create({
+      data: {
+        companyId,
+        applicationId: appHina.id,
+        status: 'SENT',
+        title: 'Senior Software Engineer',
+        salary: 5800,
+        currency: 'USD',
+        startDate: new Date(Date.now() + 30 * 86_400_000),
+        expiresAt: new Date(Date.now() + 14 * 86_400_000),
+        notes: 'Seeded offer awaiting candidate response',
+        sentAt: new Date(),
+      },
+    });
+  } else {
+    await prisma.jobOffer.update({
+      where: { id: existingOffer.id },
+      data: {
+        status: 'SENT',
+        title: 'Senior Software Engineer',
+        salary: 5800,
+        currency: 'USD',
+        notes: 'Seeded offer awaiting candidate response',
+        sentAt: existingOffer.sentAt ?? new Date(),
+        deletedAt: null,
+      },
+    });
+  }
+
+  // —— Phase 10 Performance ——
+  const perfYear = new Date().getUTCFullYear();
+
+  const upsertKpi = async (input: {
+    code: string;
+    name: string;
+    description: string;
+    unit: string;
+    targetDefault: number;
+  }) =>
+    prisma.performanceKpi.upsert({
+      where: { companyId_code: { companyId, code: input.code } },
+      update: {
+        name: input.name,
+        description: input.description,
+        unit: input.unit,
+        targetDefault: input.targetDefault,
+        isActive: true,
+        deletedAt: null,
+      },
+      create: {
+        companyId,
+        code: input.code,
+        name: input.name,
+        description: input.description,
+        unit: input.unit,
+        targetDefault: input.targetDefault,
+        isActive: true,
+      },
+    });
+
+  const kpiProductivity = await upsertKpi({
+    code: 'PRODUCTIVITY',
+    name: 'Productivity',
+    description: 'Story points / deliverables completed vs target.',
+    unit: 'points',
+    targetDefault: 40,
+  });
+  const kpiQuality = await upsertKpi({
+    code: 'QUALITY',
+    name: 'Quality',
+    description: 'Defect rate and review pass quality score.',
+    unit: 'score',
+    targetDefault: 90,
+  });
+  const kpiCsat = await upsertKpi({
+    code: 'CSAT',
+    name: 'Customer Satisfaction',
+    description: 'Internal stakeholder / customer satisfaction rating.',
+    unit: '%',
+    targetDefault: 85,
+  });
+
+  const ensureGoal = async (input: {
+    employeeId: string;
+    title: string;
+    description: string;
+    progress: number;
+    status: 'DRAFT' | 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+    priority: 'LOW' | 'MEDIUM' | 'HIGH';
+    targetValue?: number;
+    currentValue?: number;
+    unit?: string;
+  }) => {
+    const existing = await prisma.performanceGoal.findFirst({
+      where: {
+        companyId,
+        employeeId: input.employeeId,
+        title: input.title,
+        deletedAt: null,
+      },
+    });
+    if (existing) {
+      return prisma.performanceGoal.update({
+        where: { id: existing.id },
+        data: {
+          description: input.description,
+          progress: input.progress,
+          status: input.status,
+          priority: input.priority,
+          targetValue: input.targetValue ?? null,
+          currentValue: input.currentValue ?? 0,
+          unit: input.unit ?? null,
+          startDate: new Date(`${perfYear}-01-01`),
+          dueDate: new Date(`${perfYear}-12-31`),
+        },
+      });
+    }
+    return prisma.performanceGoal.create({
+      data: {
+        companyId,
+        employeeId: input.employeeId,
+        title: input.title,
+        description: input.description,
+        progress: input.progress,
+        status: input.status,
+        priority: input.priority,
+        targetValue: input.targetValue ?? null,
+        currentValue: input.currentValue ?? 0,
+        unit: input.unit ?? null,
+        startDate: new Date(`${perfYear}-01-01`),
+        dueDate: new Date(`${perfYear}-12-31`),
+      },
+    });
+  };
+
+  await ensureGoal({
+    employeeId: engineer.id,
+    title: 'Ship Phase 10 performance module',
+    description: 'Deliver backend + frontend performance management for Zenith HR.',
+    progress: 65,
+    status: 'ACTIVE',
+    priority: 'HIGH',
+    targetValue: 100,
+    currentValue: 65,
+    unit: '%',
+  });
+  await ensureGoal({
+    employeeId: engineer.id,
+    title: 'Reduce production defects',
+    description: 'Keep critical production bugs under monthly threshold.',
+    progress: 40,
+    status: 'ACTIVE',
+    priority: 'MEDIUM',
+    targetValue: 5,
+    currentValue: 2,
+    unit: 'bugs',
+  });
+  await ensureGoal({
+    employeeId: ayesha.id,
+    title: 'Complete onboarding checklist',
+    description: 'Finish probation onboarding and first project contribution.',
+    progress: 80,
+    status: 'ACTIVE',
+    priority: 'HIGH',
+    targetValue: 100,
+    currentValue: 80,
+    unit: '%',
+  });
+  await ensureGoal({
+    employeeId: manager.id,
+    title: 'Coach engineering team to goals',
+    description: 'Run monthly 1:1s and keep team goal completion above 70%.',
+    progress: 55,
+    status: 'ACTIVE',
+    priority: 'MEDIUM',
+  });
+
+  const upsertEmployeeKpiSeed = async (input: {
+    employeeId: string;
+    kpiId: string;
+    year: number;
+    quarter: number | null;
+    targetValue: number;
+    actualValue: number;
+    score: number;
+    notes: string;
+  }) => {
+    const existing = await prisma.employeeKpi.findFirst({
+      where: {
+        companyId,
+        employeeId: input.employeeId,
+        kpiId: input.kpiId,
+        year: input.year,
+        quarter: input.quarter,
+      },
+    });
+    if (existing) {
+      return prisma.employeeKpi.update({
+        where: { id: existing.id },
+        data: {
+          targetValue: input.targetValue,
+          actualValue: input.actualValue,
+          score: input.score,
+          notes: input.notes,
+        },
+      });
+    }
+    return prisma.employeeKpi.create({
+      data: {
+        companyId,
+        employeeId: input.employeeId,
+        kpiId: input.kpiId,
+        year: input.year,
+        quarter: input.quarter,
+        targetValue: input.targetValue,
+        actualValue: input.actualValue,
+        score: input.score,
+        notes: input.notes,
+      },
+    });
+  };
+
+  await upsertEmployeeKpiSeed({
+    employeeId: engineer.id,
+    kpiId: kpiProductivity.id,
+    year: perfYear,
+    quarter: 1,
+    targetValue: 40,
+    actualValue: 38,
+    score: 95,
+    notes: 'Strong delivery in Q1',
+  });
+  await upsertEmployeeKpiSeed({
+    employeeId: engineer.id,
+    kpiId: kpiQuality.id,
+    year: perfYear,
+    quarter: 1,
+    targetValue: 90,
+    actualValue: 92,
+    score: 92,
+    notes: 'Low defect rate',
+  });
+  await upsertEmployeeKpiSeed({
+    employeeId: engineer.id,
+    kpiId: kpiCsat.id,
+    year: perfYear,
+    quarter: null,
+    targetValue: 85,
+    actualValue: 88,
+    score: 88,
+    notes: 'Annual CSAT snapshot',
+  });
+
+  let reviewCycle = await prisma.reviewCycle.findFirst({
+    where: {
+      companyId,
+      name: `${perfYear} Mid-Year Review`,
+      deletedAt: null,
+    },
+  });
+  if (reviewCycle) {
+    reviewCycle = await prisma.reviewCycle.update({
+      where: { id: reviewCycle.id },
+      data: {
+        year: perfYear,
+        startDate: new Date(`${perfYear}-06-01`),
+        endDate: new Date(`${perfYear}-07-15`),
+        status: 'ACTIVE',
+        deletedAt: null,
+      },
+    });
+  } else {
+    reviewCycle = await prisma.reviewCycle.create({
+      data: {
+        companyId,
+        name: `${perfYear} Mid-Year Review`,
+        year: perfYear,
+        startDate: new Date(`${perfYear}-06-01`),
+        endDate: new Date(`${perfYear}-07-15`),
+        status: 'ACTIVE',
+      },
+    });
+  }
+
+  const ensureReview = async (input: {
+    employeeId: string;
+    reviewerId: string;
+    status: 'DRAFT' | 'IN_PROGRESS' | 'SUBMITTED' | 'ACKNOWLEDGED' | 'COMPLETED';
+    selfRating?: number;
+    managerRating?: number;
+    overallRating?: number;
+    selfComments?: string;
+    managerComments?: string;
+  }) => {
+    const existing = await prisma.performanceReview.findFirst({
+      where: {
+        companyId,
+        cycleId: reviewCycle!.id,
+        employeeId: input.employeeId,
+        deletedAt: null,
+      },
+    });
+    const data = {
+      reviewerId: input.reviewerId,
+      status: input.status,
+      selfRating: input.selfRating ?? null,
+      managerRating: input.managerRating ?? null,
+      overallRating: input.overallRating ?? null,
+      selfComments: input.selfComments ?? null,
+      managerComments: input.managerComments ?? null,
+      submittedAt:
+        input.status === 'SUBMITTED' ||
+        input.status === 'ACKNOWLEDGED' ||
+        input.status === 'COMPLETED'
+          ? new Date()
+          : null,
+      acknowledgedAt:
+        input.status === 'ACKNOWLEDGED' || input.status === 'COMPLETED' ? new Date() : null,
+    };
+    if (existing) {
+      return prisma.performanceReview.update({ where: { id: existing.id }, data });
+    }
+    return prisma.performanceReview.create({
+      data: {
+        companyId,
+        cycleId: reviewCycle!.id,
+        employeeId: input.employeeId,
+        ...data,
+      },
+    });
+  };
+
+  const engineerReview = await ensureReview({
+    employeeId: engineer.id,
+    reviewerId: manager.id,
+    status: 'SUBMITTED',
+    selfRating: 4.2,
+    managerRating: 4.5,
+    overallRating: 4.4,
+    selfComments: 'Delivered payroll and recruitment modules on schedule.',
+    managerComments: 'Consistently strong ownership and technical depth.',
+  });
+  await ensureReview({
+    employeeId: ayesha.id,
+    reviewerId: manager.id,
+    status: 'IN_PROGRESS',
+    selfRating: 3.8,
+    selfComments: 'Building confidence on the engineering team.',
+  });
+
+  const ensureFeedback = async (input: {
+    fromEmployeeId: string;
+    toEmployeeId: string;
+    type: 'PEER' | 'MANAGER' | 'SELF' | 'UPWARD' | 'GENERAL';
+    content: string;
+    rating?: number;
+    reviewId?: string;
+  }) => {
+    const existing = await prisma.performanceFeedback.findFirst({
+      where: {
+        companyId,
+        fromEmployeeId: input.fromEmployeeId,
+        toEmployeeId: input.toEmployeeId,
+        type: input.type,
+        content: input.content,
+        deletedAt: null,
+      },
+    });
+    if (existing) {
+      return prisma.performanceFeedback.update({
+        where: { id: existing.id },
+        data: {
+          rating: input.rating ?? null,
+          reviewId: input.reviewId ?? null,
+        },
+      });
+    }
+    return prisma.performanceFeedback.create({
+      data: {
+        companyId,
+        fromEmployeeId: input.fromEmployeeId,
+        toEmployeeId: input.toEmployeeId,
+        type: input.type,
+        content: input.content,
+        rating: input.rating ?? null,
+        reviewId: input.reviewId ?? null,
+      },
+    });
+  };
+
+  await ensureFeedback({
+    fromEmployeeId: manager.id,
+    toEmployeeId: engineer.id,
+    type: 'MANAGER',
+    content: 'Excellent collaboration across payroll and recruitment deliveries.',
+    rating: 4.5,
+    reviewId: engineerReview.id,
+  });
+  await ensureFeedback({
+    fromEmployeeId: ayesha.id,
+    toEmployeeId: engineer.id,
+    type: 'PEER',
+    content: 'Always available to pair and unblock juniors.',
+    rating: 4.0,
+  });
+  await ensureFeedback({
+    fromEmployeeId: engineer.id,
+    toEmployeeId: manager.id,
+    type: 'UPWARD',
+    content: 'Clear priorities and supportive coaching in 1:1s.',
+    rating: 4.3,
+  });
+
+  const existingPromotion = await prisma.promotionRequest.findFirst({
+    where: {
+      companyId,
+      employeeId: engineer.id,
+      status: { in: ['DRAFT', 'PENDING'] },
+      deletedAt: null,
+    },
+  });
+  if (existingPromotion) {
+    await prisma.promotionRequest.update({
+      where: { id: existingPromotion.id },
+      data: {
+        proposedDesignationId: mgrDesignation.id,
+        proposedTitle: 'Engineering Lead',
+        reason: 'Consistent delivery leadership across Phase 8–9 and mentoring juniors.',
+        status: 'PENDING',
+        effectiveDate: new Date(`${perfYear}-10-01`),
+        deletedAt: null,
+      },
+    });
+  } else {
+    await prisma.promotionRequest.create({
+      data: {
+        companyId,
+        employeeId: engineer.id,
+        proposedDesignationId: mgrDesignation.id,
+        proposedTitle: 'Engineering Lead',
+        reason: 'Consistent delivery leadership across Phase 8–9 and mentoring juniors.',
+        status: 'PENDING',
+        effectiveDate: new Date(`${perfYear}-10-01`),
+      },
+    });
+  }
+
+  // —— Phase 11 AI sample generations ——
+  const existingInsights = await prisma.aiGeneration.findFirst({
+    where: {
+      companyId,
+      feature: 'INSIGHTS',
+      deletedAt: null,
+      relatedEntityType: 'Company',
+      relatedEntityId: companyId,
+    },
+  });
+  if (!existingInsights) {
+    await prisma.aiGeneration.create({
+      data: {
+        companyId,
+        userId: admin.id,
+        feature: 'INSIGHTS',
+        status: 'SUCCESS',
+        provider: 'mock',
+        model: 'mock-nova-1',
+        relatedEntityType: 'Company',
+        relatedEntityId: companyId,
+        input: { focus: 'workforce', source: 'seed' },
+        output: {
+          insights: [
+            {
+              title: 'Attendance trend',
+              detail: 'Late arrivals are trending down in Operations — keep reinforcing check-in habits.',
+              severity: 'info',
+            },
+            {
+              title: 'Leave concentration',
+              detail: 'Several teams have overlapping leave next week; confirm coverage plans with managers.',
+              severity: 'warning',
+            },
+            {
+              title: 'Hiring funnel',
+              detail: 'Screening stage has the longest dwell time; prioritize resume screening for open roles.',
+              severity: 'info',
+            },
+          ],
+        },
+      },
+    });
+  }
+
+  const existingRecs = await prisma.aiGeneration.findFirst({
+    where: {
+      companyId,
+      feature: 'RECOMMENDATIONS',
+      deletedAt: null,
+      relatedEntityType: 'Company',
+      relatedEntityId: companyId,
+    },
+  });
+  if (!existingRecs) {
+    await prisma.aiGeneration.create({
+      data: {
+        companyId,
+        userId: admin.id,
+        feature: 'RECOMMENDATIONS',
+        status: 'SUCCESS',
+        provider: 'mock',
+        model: 'mock-nova-1',
+        relatedEntityType: 'Company',
+        relatedEntityId: companyId,
+        input: { limit: 3, source: 'seed' },
+        output: {
+          recommendations: [
+            {
+              area: 'Recruitment',
+              action: 'Clear the screening backlog for open engineering roles this week.',
+              impact: 'high',
+            },
+            {
+              area: 'Performance',
+              action: 'Close pending mid-year reviews before month end.',
+              impact: 'medium',
+            },
+            {
+              area: 'Leave',
+              action: 'Remind managers to approve leave requests older than 5 days.',
+              impact: 'medium',
+            },
+          ],
+        },
+      },
     });
   }
 
