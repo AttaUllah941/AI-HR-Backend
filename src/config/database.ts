@@ -39,8 +39,19 @@ function isClientCurrent(client: PrismaClient | undefined): client is PrismaClie
       'employee' in client &&
       client.employee &&
       'attendanceRecord' in client &&
+      client.attendanceRecord &&
       'branchAllowedIp' in client &&
-      'leaveRequest' in client,
+      client.branchAllowedIp &&
+      'leaveRequest' in client &&
+      client.leaveRequest &&
+      'payrollRun' in client &&
+      client.payrollRun &&
+      'jobOpening' in client &&
+      client.jobOpening &&
+      'performanceGoal' in client &&
+      client.performanceGoal &&
+      'aiUsageLog' in client &&
+      client.aiUsageLog,
   );
 }
 
