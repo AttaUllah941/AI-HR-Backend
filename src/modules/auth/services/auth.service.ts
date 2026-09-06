@@ -195,6 +195,7 @@ export class AuthService {
       email: user.email,
       roles,
       permissions,
+      sid: session.id,
     });
 
     const refreshToken = signRefreshToken({ sub: user.id, sid: session.id });
@@ -395,6 +396,7 @@ export class AuthService {
       email: user.email,
       roles,
       permissions,
+      sid: session.id,
     });
     const refreshToken = signRefreshToken({ sub: user.id, sid: session.id }, refreshExpiresIn);
 

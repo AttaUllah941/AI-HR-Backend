@@ -73,6 +73,13 @@ model Company {
   aiUsageLogs       AiUsageLog[]
   aiConversations   AiConversation[]
   aiGenerations     AiGeneration[]
+  reportExportLogs  ReportExportLog[]
+  notifications     Notification[]
+  notificationTemplates NotificationTemplate[]
+  notificationPreferences NotificationPreference[]
+  pushDevices       PushDevice[]
+  settings          CompanySettings?
+  storedFiles       StoredFile[]
 
   @@map("companies")
 }
@@ -106,6 +113,12 @@ model User {
   aiUsageLogs         AiUsageLog[]
   aiConversations     AiConversation[]
   aiGenerations       AiGeneration[]
+  reportExportLogs    ReportExportLog[]
+  notifications       Notification[]
+  notificationPreferences NotificationPreference[]
+  pushDevices         PushDevice[]
+  preference          UserPreference?
+  uploadedFiles       StoredFile[]          @relation("FileUploader")
 
   @@index([companyId])
   @@index([status])
@@ -439,6 +452,7 @@ model Employee {
   skills            EmployeeSkill[]
   certifications    EmployeeCertification[]
   documents         EmployeeDocument[]
+  storedFiles       StoredFile[]
   attendanceRecords AttendanceRecord[]
   overtimeRequests  OvertimeRequest[]
   leaveBalances     LeaveBalance[]
@@ -1134,6 +1148,7 @@ model Candidate {
 
   company      Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
   applications JobApplication[]
+  storedFiles  StoredFile[]
 
   @@unique([companyId, email])
   @@index([companyId])
@@ -1545,4 +1560,247 @@ model AiGeneration {
   @@index([relatedEntityType, relatedEntityId])
   @@index([deletedAt])
   @@map("ai_generations")
+}
+
+enum ReportType {
+  OVERVIEW
+  ATTENDANCE
+  LEAVE
+  PAYROLL
+  RECRUITMENT
+  PERFORMANCE
+  EMPLOYEES
+}
+
+enum ReportExportFormat {
+  CSV
+  PDF
+  JSON
+}
+
+model ReportExportLog {
+  id         String             @id @default(cuid())
+  companyId  String
+  userId     String?
+  reportType ReportType
+  format     ReportExportFormat
+  filters    Json?
+  rowCount   Int?
+  fileName   String?
+  createdAt  DateTime           @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([userId])
+  @@index([reportType])
+  @@map("report_export_logs")
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  PUSH
+}
+
+enum NotificationDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+  READ
+}
+
+enum NotificationCategory {
+  SYSTEM
+  LEAVE
+  ATTENDANCE
+  PAYROLL
+  RECRUITMENT
+  PERFORMANCE
+  AI
+  SECURITY
+  OTHER
+}
+
+enum PushPlatform {
+  WEB
+  IOS
+  ANDROID
+}
+
+model NotificationTemplate {
+  id           String               @id @default(cuid())
+  companyId    String
+  code         String
+  name         String
+  category     NotificationCategory @default(SYSTEM)
+  channel      NotificationChannel  @default(IN_APP)
+  subject      String?
+  bodyTemplate String
+  isActive     Boolean              @default(true)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  deletedAt    DateTime?
+
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  notifications Notification[]
+
+  @@unique([companyId, code])
+  @@index([category])
+  @@index([deletedAt])
+  @@map("notification_templates")
+}
+
+model Notification {
+  id          String                     @id @default(cuid())
+  companyId   String
+  userId      String
+  templateId  String?
+  category    NotificationCategory       @default(SYSTEM)
+  channel     NotificationChannel        @default(IN_APP)
+  title       String
+  body        String
+  data        Json?
+  status      NotificationDeliveryStatus @default(PENDING)
+  readAt      DateTime?
+  sentAt      DateTime?
+  emailTo     String?
+  errorMessage String?
+  createdAt   DateTime                   @default(now())
+  updatedAt   DateTime                   @updatedAt
+  deletedAt   DateTime?
+
+  company  Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user     User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  template NotificationTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, userId, status])
+  @@index([userId, createdAt])
+  @@index([category])
+  @@index([channel])
+  @@index([deletedAt])
+  @@map("notifications")
+}
+
+model NotificationPreference {
+  id           String               @id @default(cuid())
+  companyId    String
+  userId       String
+  category     NotificationCategory
+  inAppEnabled Boolean              @default(true)
+  emailEnabled Boolean              @default(true)
+  pushEnabled  Boolean              @default(false)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, category])
+  @@index([companyId])
+  @@map("notification_preferences")
+}
+
+model PushDevice {
+  id         String       @id @default(cuid())
+  companyId  String
+  userId     String
+  platform   PushPlatform @default(WEB)
+  token      String
+  label      String?
+  isActive   Boolean      @default(true)
+  lastSeenAt DateTime     @default(now())
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+  deletedAt  DateTime?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, token])
+  @@index([companyId, userId])
+  @@index([isActive])
+  @@index([deletedAt])
+  @@map("push_devices")
+}
+
+model UserPreference {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  theme        String   @default("system")
+  locale       String   @default("en-US")
+  timezone     String   @default("UTC")
+  dateFormat   String   @default("DD MMM YYYY")
+  timeFormat   String   @default("24h")
+  weekStartsOn Int      @default(1)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+model CompanySettings {
+  id                 String   @id @default(cuid())
+  companyId          String   @unique
+  emailProvider      String   @default("console")
+  emailFrom          String?
+  emailSmtpUrl       String?
+  emailApiKeySet     Boolean  @default(false)
+  storageProvider    String   @default("local")
+  storageBucket      String?
+  storageRegion      String?
+  storagePublicBaseUrl String?
+  integrations       Json?
+  system             Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("company_settings")
+}
+
+enum FileCategory {
+  GENERAL
+  EMPLOYEE_DOCUMENT
+  RESUME
+  AVATAR
+  POLICY
+  OTHER
+}
+
+model StoredFile {
+  id               String       @id @default(cuid())
+  companyId        String
+  uploadedById     String?
+  category         FileCategory @default(GENERAL)
+  originalName     String
+  storedName       String
+  mimeType         String
+  sizeBytes        Int
+  storageProvider  String       @default("local")
+  storageKey       String
+  checksumSha256   String?
+  title            String?
+  description      String?
+  employeeId       String?
+  candidateId      String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  deletedAt        DateTime?
+
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  uploadedBy User?      @relation("FileUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  employee   Employee?  @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  candidate  Candidate? @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, category])
+  @@index([employeeId])
+  @@index([candidateId])
+  @@index([uploadedById])
+  @@index([deletedAt])
+  @@map("stored_files")
 }

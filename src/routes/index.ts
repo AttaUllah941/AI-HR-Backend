@@ -10,6 +10,11 @@ import { organizationRouter } from '../modules/organization/organization.routes.
 import { payrollRouter } from '../modules/payroll/payroll.routes.js';
 import { performanceRouter } from '../modules/performance/performance.routes.js';
 import { recruitmentRouter } from '../modules/recruitment/recruitment.routes.js';
+import { reportsRouter } from '../modules/reports/reports.routes.js';
+import { notificationsRouter } from '../modules/notifications/notifications.routes.js';
+import { profileRouter } from '../modules/profile/profile.routes.js';
+import { settingsRouter } from '../modules/settings/settings.routes.js';
+import { filesRouter } from '../modules/files/files.routes.js';
 
 export const apiRouter = Router();
 
@@ -24,3 +29,8 @@ apiRouter.use('/payroll', payrollRouter);
 apiRouter.use('/recruitment', recruitmentRouter);
 apiRouter.use('/performance', performanceRouter);
 apiRouter.use('/ai', aiRouter);
+apiRouter.use('/reports', reportsRouter);
+apiRouter.use('/notifications', notificationsRouter);
+apiRouter.use('/profile', profileRouter);
+apiRouter.use('/settings', settingsRouter);
+apiRouter.use('/files', filesRouter);

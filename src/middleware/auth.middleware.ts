@@ -12,6 +12,7 @@ export interface AuthUser {
   email: string;
   roles: string[];
   permissions: string[];
+  sessionId?: string;
 }
 
 declare global {
@@ -22,7 +23,7 @@ declare global {
   }
 }
 
-async function hydrateAuthUser(userId: string): Promise<AuthUser | null> {
+async function hydrateAuthUser(userId: string, sessionId?: string): Promise<AuthUser | null> {
   const user = await authRepo.findById(userId);
   if (
     !user ||
@@ -39,6 +40,7 @@ async function hydrateAuthUser(userId: string): Promise<AuthUser | null> {
     email: user.email,
     roles,
     permissions,
+    sessionId,
   };
 }
 
@@ -62,7 +64,7 @@ async function runAuthMiddleware(
 
   try {
     const payload = verifyAccessToken(token);
-    const user = await hydrateAuthUser(payload.sub);
+    const user = await hydrateAuthUser(payload.sub, payload.sid);
     if (!user) {
       next(new UnauthorizedError('Account is not allowed'));
       return;
@@ -92,7 +94,7 @@ async function runOptionalAuthMiddleware(
 
   try {
     const payload = verifyAccessToken(header.slice('Bearer '.length).trim());
-    const user = await hydrateAuthUser(payload.sub);
+    const user = await hydrateAuthUser(payload.sub, payload.sid);
     if (user) {
       req.user = user;
     }

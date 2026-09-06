@@ -83,8 +83,11 @@ const ROLE_PERMISSION_CODES: Record<string, 'ALL' | string[]> = {
     'files:update',
     'files:delete',
     'users:view',
+    'users:create',
     'users:update',
+    'roles:view',
     'settings:view',
+    'settings:update',
   ],
   RECRUITER: [
     'dashboard:view',
@@ -213,10 +216,64 @@ async function seed(): Promise<void> {
     },
   });
 
+  await prisma.companySettings.upsert({
+    where: { companyId: 'seed-company-zenith' },
+    update: {},
+    create: {
+      companyId: 'seed-company-zenith',
+      emailProvider: 'console',
+      emailFrom: 'noreply@zenith.local',
+      storageProvider: 'local',
+      system: {
+        maintenanceMode: false,
+        allowSelfRegistration: false,
+        defaultTimezone: 'Asia/Karachi',
+        defaultLocale: 'en-US',
+      },
+      integrations: {},
+    },
+  });
+
   const hrAdmin = await prisma.role.findUniqueOrThrow({ where: { code: 'HR_ADMIN' } });
+  const superAdminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SUPER_ADMIN' } });
 
   const { hash } = await import('bcryptjs');
   const passwordHash = await hash('Password123!', 12);
+
+  const superAdmin = await prisma.user.upsert({
+    where: { email: 'superadmin@zenith.local' },
+    update: {
+      passwordHash,
+      status: 'ACTIVE',
+      emailVerifiedAt: new Date(),
+      firstName: 'Zenith',
+      lastName: 'SuperAdmin',
+      companyId: 'seed-company-zenith',
+    },
+    create: {
+      email: 'superadmin@zenith.local',
+      passwordHash,
+      firstName: 'Zenith',
+      lastName: 'SuperAdmin',
+      status: 'ACTIVE',
+      emailVerifiedAt: new Date(),
+      companyId: 'seed-company-zenith',
+    },
+  });
+
+  await prisma.userRole.upsert({
+    where: {
+      userId_roleId: {
+        userId: superAdmin.id,
+        roleId: superAdminRole.id,
+      },
+    },
+    update: {},
+    create: {
+      userId: superAdmin.id,
+      roleId: superAdminRole.id,
+    },
+  });
 
   const admin = await prisma.user.upsert({
     where: { email: 'admin@zenith.local' },
@@ -1962,7 +2019,107 @@ async function seed(): Promise<void> {
     });
   }
 
+  // —— Phase 12 sample report export log ——
+  const existingExport = await prisma.reportExportLog.findFirst({
+    where: { companyId, reportType: 'OVERVIEW', fileName: 'zenith-overview-seed.csv' },
+  });
+  if (!existingExport) {
+    await prisma.reportExportLog.create({
+      data: {
+        companyId,
+        userId: admin.id,
+        reportType: 'OVERVIEW',
+        format: 'CSV',
+        filters: { source: 'seed' },
+        rowCount: 10,
+        fileName: 'zenith-overview-seed.csv',
+      },
+    });
+  }
+
+  // —— Phase 13 notifications samples ——
+  const leaveTemplate = await prisma.notificationTemplate.upsert({
+    where: { companyId_code: { companyId, code: 'LEAVE_STATUS' } },
+    create: {
+      companyId,
+      code: 'LEAVE_STATUS',
+      name: 'Leave status update',
+      category: 'LEAVE',
+      channel: 'IN_APP',
+      subject: 'Leave update for {{firstName}}',
+      bodyTemplate: 'Hello {{firstName}}, {{body}}',
+      isActive: true,
+    },
+    update: { isActive: true },
+  });
+
+  await prisma.notificationTemplate.upsert({
+    where: { companyId_code: { companyId, code: 'PAYROLL_PAID' } },
+    create: {
+      companyId,
+      code: 'PAYROLL_PAID',
+      name: 'Payroll paid',
+      category: 'PAYROLL',
+      channel: 'EMAIL',
+      subject: 'Payslip ready',
+      bodyTemplate: 'Hi {{firstName}}, your payslip is ready. {{body}}',
+      isActive: true,
+    },
+    update: { isActive: true },
+  });
+
+  const existingNotif = await prisma.notification.findFirst({
+    where: {
+      companyId,
+      userId: admin.id,
+      title: 'Welcome to Zenith notifications',
+      deletedAt: null,
+    },
+  });
+  if (!existingNotif) {
+    await prisma.notification.create({
+      data: {
+        companyId,
+        userId: admin.id,
+        templateId: leaveTemplate.id,
+        category: 'SYSTEM',
+        channel: 'IN_APP',
+        title: 'Welcome to Zenith notifications',
+        body: 'In-app, email, and push channels are ready. Manage preferences anytime.',
+        status: 'SENT',
+        sentAt: new Date(),
+      },
+    });
+    await prisma.notification.create({
+      data: {
+        companyId,
+        userId: admin.id,
+        category: 'LEAVE',
+        channel: 'IN_APP',
+        title: 'Leave request pending',
+        body: 'A leave request is waiting for approval in your queue.',
+        status: 'SENT',
+        sentAt: new Date(),
+      },
+    });
+    if (employeeUser?.id) {
+      await prisma.notification.create({
+        data: {
+          companyId,
+          userId: employeeUser.id,
+          category: 'PAYROLL',
+          channel: 'IN_APP',
+          title: 'Payslip available',
+          body: 'Your latest payslip is ready to view.',
+          status: 'SENT',
+          sentAt: new Date(),
+        },
+      });
+    }
+  }
+
   console.log('Seed completed successfully.');
+  console.log('Demo super admin: superadmin@zenith.local / Password123! (local/dev only)');
   console.log('Demo admin: admin@zenith.local / Password123! (local/dev only)');
   console.log('Demo employee: employee@zenith.local / Password123! (local/dev only)');
 }
