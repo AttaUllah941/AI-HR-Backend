@@ -1,4 +1,5 @@
 import { DashboardRepository } from '../repositories/dashboard.repository.js';
+import { NotificationsService } from '../../notifications/services/notifications.service.js';
 
 export interface DashboardQuickAction {
   id: string;
@@ -36,7 +37,10 @@ function humanizeAction(action: string): string {
 const DEPARTMENT_COLORS = ['#3b82f6', '#8b5cf6', '#06b6d4', '#f59e0b', '#10b981', '#ec4899'];
 
 export class DashboardService {
-  constructor(private readonly repo = new DashboardRepository()) {}
+  constructor(
+    private readonly repo = new DashboardRepository(),
+    private readonly notifications = new NotificationsService(),
+  ) {}
 
   async getSummary(user: {
     id: string;
@@ -274,16 +278,21 @@ export class DashboardService {
   }
 
   async getNotifications(userId: string, limit = 8) {
-    const rows = await this.repo.recentNotificationsForUser(userId, Math.min(Math.max(limit, 1), 20));
-    return {
-      unreadCount: rows.length,
-      items: rows.map((row) => ({
-        id: row.id,
-        title: humanizeAction(row.action),
-        body: row.entityType ? `${row.entityType} activity` : 'System activity',
-        createdAt: row.createdAt.toISOString(),
-        read: false,
-      })),
-    };
+    try {
+      return await this.notifications.getFeed({ id: userId, permissions: ['notifications:view'] }, limit);
+    } catch {
+      // Fallback to audit-log proxy if notifications module is unavailable for the user
+      const rows = await this.repo.recentNotificationsForUser(userId, Math.min(Math.max(limit, 1), 20));
+      return {
+        unreadCount: rows.length,
+        items: rows.map((row) => ({
+          id: row.id,
+          title: humanizeAction(row.action),
+          body: row.entityType ? `${row.entityType} activity` : 'System activity',
+          createdAt: row.createdAt.toISOString(),
+          read: false,
+        })),
+      };
+    }
   }
 }

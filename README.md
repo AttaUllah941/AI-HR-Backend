@@ -254,11 +254,117 @@ Permissions: `ai:view` (read), `ai:create` (generate/chat), `ai:delete` (soft-de
 
 Every provider call is timed and written to `AiUsageLog` as `SUCCESS` or `FAILED`.
 
+## Phase 12 reports endpoints
+
+Central analytics hub aggregating attendance, leave, payroll, recruitment, performance, and employee data with chart-ready series and CSV/PDF/JSON export.
+
+Permissions: `reports:view` (read), `reports:export` (download). HR Manager gets both; Recruiter/Manager get view.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/reports/summary` | Cross-module KPIs, charts, recent exports |
+| GET | `/api/v1/reports/attendance` | Attendance report (`dateFrom`, `dateTo`, `departmentId`) |
+| GET | `/api/v1/reports/leave` | Leave report (`year`, `employeeId`) |
+| GET | `/api/v1/reports/payroll` | Payroll report (`year`) |
+| GET | `/api/v1/reports/recruitment` | Recruitment funnel (`jobOpeningId`) |
+| GET | `/api/v1/reports/performance` | Performance report (`year`, `employeeId`) |
+| GET | `/api/v1/reports/employees` | Headcount / workforce report (`departmentId`) |
+| GET | `/api/v1/reports/exports` | Recent export audit log |
+| POST/GET | `/api/v1/reports/export` | Download CSV / PDF / JSON (`reportType`, `format`, filters) |
+
+Exports are logged to `ReportExportLog`. CSV is Excel-compatible (UTF-8 BOM); PDF is a lightweight text summary.
+
+## Phase 13 notifications endpoints
+
+In-app notification history, email delivery abstraction, push device registration architecture, templates, and per-category preferences.
+
+Permissions: `notifications:view` (inbox/preferences/devices), `notifications:manage` (templates + send). HR Manager gets manage; most roles get view.
+
+Email: `EMAIL_PROVIDER=console` (default) or `smtp` with `EMAIL_SMTP_URL` relay. Push uses a mock provider that logs payloads until FCM/APNs is wired.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/notifications/status` | Email/push provider names + channel list |
+| GET | `/api/v1/notifications/summary` | Unread counts by category + recent |
+| GET | `/api/v1/notifications/feed` | Header bell feed (`?limit=`) |
+| GET | `/api/v1/notifications` | Paginated history (`category`, `channel`, `status`, `unreadOnly`) |
+| GET | `/api/v1/notifications/:id` | Detail |
+| POST | `/api/v1/notifications/:id/read` | Mark one read |
+| POST | `/api/v1/notifications/read-all` | Mark all in-app unread as read |
+| DELETE | `/api/v1/notifications/:id` | Soft-delete |
+| GET/PUT | `/api/v1/notifications/preferences` | Per-category in-app/email/push toggles |
+| GET/POST/PATCH/DELETE | `/api/v1/notifications/templates` | Manage templates (`notifications:manage`) |
+| GET/POST/DELETE | `/api/v1/notifications/devices` | Push device registration |
+| POST | `/api/v1/notifications/send` | Dispatch to user across channels (`manage`) |
+
+`GET /dashboard/notifications` now prefers the real notification feed (audit-log fallback).
+
+## Phase 14 profile endpoints
+
+Self-service profile for the signed-in user (auth required; no special permission beyond login).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/profile` | Profile + linked employee summary + preferences |
+| PATCH | `/api/v1/profile` | Update name, phone, avatar URL |
+| POST | `/api/v1/profile/password` | Change password (revokes other sessions) |
+| GET/PUT | `/api/v1/profile/preferences` | Theme, locale, timezone, date/time formats |
+| GET | `/api/v1/profile/sessions` | Session history (marks current when `sid` in access token) |
+| DELETE | `/api/v1/profile/sessions/:id` | Revoke a session (not the current one) |
+| POST | `/api/v1/profile/sessions/revoke-others` | Revoke all other active sessions |
+| GET | `/api/v1/profile/activity` | Recent audit activity for the user |
+
+MFA enable/disable remains at `/api/v1/auth/mfa/*` and UI `/mfa-setup`.
+
+## Phase 15 settings endpoints
+
+Company administration hub under `/api/v1/settings` (auth + RBAC).
+
+| Method | Path | Permission | Description |
+|--------|------|------------|-------------|
+| GET | `/api/v1/settings/summary` | `settings:view` | Company snapshot + counts |
+| GET/PATCH | `/api/v1/settings/company` | `settings:view` / `settings:update` | Company profile |
+| GET | `/api/v1/settings/config` | `settings:view` | Email, storage, integrations, system |
+| PATCH | `/api/v1/settings/config/email` | `settings:update` | Email provider settings |
+| PATCH | `/api/v1/settings/config/storage` | `settings:update` | File storage provider |
+| PATCH | `/api/v1/settings/config/integrations` | `settings:update` | Integration metadata |
+| PATCH | `/api/v1/settings/config/system` | `settings:update` | System toggles |
+| GET/POST | `/api/v1/settings/users` | `users:view` / `users:create` | List / invite users |
+| PATCH/DELETE | `/api/v1/settings/users/:id` | `users:update` / `users:delete` | Update / soft-delete |
+| GET | `/api/v1/settings/roles` | `roles:view` | Roles + permission matrix |
+| GET | `/api/v1/settings/permissions` | `roles:view` | All permission codes |
+| PUT | `/api/v1/settings/roles/:id/permissions` | `roles:manage` | Replace role grants (not Super Admin) |
+| GET | `/api/v1/settings/audit-logs` | `settings:view` | Company-scoped audit trail |
+
+Frontend: `/settings` shell (overview, company, users, roles, email, storage, system, audit).
+
+## Phase 16 file management endpoints
+
+Secure file registry under `/api/v1/files` (auth + RBAC). Local disk storage (`FILE_STORAGE_ROOT`, default `uploads/`) with MIME/extension validation and size limits (`FILE_MAX_BYTES`, default 10MB).
+
+| Method | Path | Permission | Description |
+|--------|------|------------|-------------|
+| GET | `/api/v1/files/summary` | `files:view` | Counts, bytes, storage config |
+| GET | `/api/v1/files` | `files:view` | List/filter (`category`, `search`, `employeeId`, `candidateId`) |
+| GET | `/api/v1/files/:id` | `files:view` | File metadata |
+| GET | `/api/v1/files/:id/download` | `files:view` | Authenticated download stream |
+| GET | `/api/v1/files/:id/preview` | `files:view` | Inline preview (PDF/images/text) |
+| POST | `/api/v1/files/upload` | `files:create` | Multipart upload (`file` + category metadata) |
+| PATCH | `/api/v1/files/:id` | `files:update` | Update title/links/category |
+| DELETE | `/api/v1/files/:id` | `files:delete` | Soft-delete + remove from disk |
+
+Upload categories: `GENERAL`, `EMPLOYEE_DOCUMENT` (requires `employeeId`, also creates `EmployeeDocument`), `RESUME` (requires `candidateId`, updates candidate resume fields), `AVATAR` (updates user avatar URL), `POLICY`, `OTHER`.
+
+View-only users see their own uploads / linked employee docs; staff with broader HR permissions see the company library.
+
+Frontend: `/files` shell (overview, library, documents, resumes).
+
 ### Seeded demo user
 
 After `npm run prisma:seed`:
 
-- Admin: `admin@zenith.local` / `Password123!`
+- Super Admin: `superadmin@zenith.local` / `Password123!`
+- Admin (HR Admin): `admin@zenith.local` / `Password123!`
 - Employee: `employee@zenith.local` / `Password123!`
 
 ## Docker

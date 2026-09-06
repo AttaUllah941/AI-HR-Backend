@@ -22,6 +22,14 @@ const envSchema = z.object({
   AI_API_KEY: z.string().optional().default(''),
   AI_BASE_URL: z.string().optional().default('https://api.openai.com/v1'),
   AI_MODEL: z.string().optional().default('gpt-4o-mini'),
+  // Email — console sink by default; smtp posts to EMAIL_SMTP_URL relay
+  EMAIL_PROVIDER: z.enum(['console', 'smtp']).default('console'),
+  EMAIL_FROM: z.string().optional().default('noreply@zenith.local'),
+  EMAIL_SMTP_URL: z.string().optional().default(''),
+  EMAIL_API_KEY: z.string().optional().default(''),
+  // Files — local disk by default; company settings may note cloud providers
+  FILE_STORAGE_ROOT: z.string().optional().default('uploads'),
+  FILE_MAX_BYTES: z.coerce.number().int().positive().default(10_485_760),
 });
 
 const parsed = envSchema.safeParse(process.env);
