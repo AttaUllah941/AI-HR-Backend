@@ -3,6 +3,7 @@ import { emailService } from '../../../services/email/email.service.js';
 import { pushProvider } from '../../../services/push/push-provider.js';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../../utils/app-error.js';
 import { NotificationsRepository } from '../repositories/notifications.repository.js';
+import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import type {
   CreateTemplateInput,
   RegisterDeviceInput,
@@ -24,21 +25,6 @@ const ALL_CATEGORIES: NotificationCategory[] = [
   'SECURITY',
   'OTHER',
 ];
-
-function paginationMeta(page: number, pageSize: number, total: number) {
-  return {
-    page,
-    pageSize,
-    total,
-    totalPages: Math.ceil(total / pageSize) || 1,
-  };
-}
-
-function parsePage(params: Record<string, string | undefined>) {
-  const page = Math.max(1, Number(params.page) || 1);
-  const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20));
-  return { page, pageSize };
-}
 
 function applyTemplate(template: string, vars: Record<string, string>): string {
   return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, key: string) => vars[key] ?? '');
@@ -114,7 +100,7 @@ export class NotificationsService {
 
   async list(actor: AuthActor, params: Record<string, string | undefined>) {
     const user = await this.requireUser(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const category = params.category as NotificationCategory | undefined;
     const channel = params.channel as NotificationChannel | undefined;
     const status = params.status as never;

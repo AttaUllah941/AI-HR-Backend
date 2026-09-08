@@ -1,0 +1,42 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npm run lint
+
+      - name: Unit + smoke tests
+        run: npm test
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://zenith:zenith@127.0.0.1:5432/zenith_hr?schema=public
+          JWT_ACCESS_SECRET: ci-access-secret-min-32-characters!!
+          JWT_REFRESH_SECRET: ci-refresh-secret-min-32-characters!
+          CORS_ORIGIN: http://localhost:4200
+          APP_URL: http://localhost:4200
+
+      - name: Build
+        run: npm run build

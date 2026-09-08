@@ -4,6 +4,7 @@ import { ForbiddenError, NotFoundError, ValidationError } from '../../../utils/a
 import { createAiProvider } from '../providers/create-ai-provider.js';
 import type { AiChatMessage, AiProvider } from '../providers/ai-provider.js';
 import { AiRepository } from '../repositories/ai.repository.js';
+import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import type {
   AppraisalInput,
   AssistantChatInput,
@@ -14,21 +15,6 @@ import type {
 } from '../validators/ai.validators.js';
 
 type AuthActor = { id: string; permissions: string[] };
-
-function paginationMeta(page: number, pageSize: number, total: number) {
-  return {
-    page,
-    pageSize,
-    total,
-    totalPages: Math.ceil(total / pageSize) || 1,
-  };
-}
-
-function parsePage(params: Record<string, string | undefined>) {
-  const page = Math.max(1, Number(params.page) || 1);
-  const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20));
-  return { page, pageSize };
-}
 
 /** Safe JSON parse — returns parsed object or `{ text: content }`. */
 export function safeParseJson(content: string): Prisma.InputJsonValue {
@@ -279,7 +265,7 @@ export class AiService {
 
   async listConversations(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const [items, total] = await this.repo.listConversations(companyId, actor.id, {
       page,
       pageSize,
@@ -649,7 +635,7 @@ export class AiService {
 
   async listGenerations(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const feature = params.feature as AiFeature | undefined;
     const allowed: AiFeature[] = [
       'RESUME_SCREENING',

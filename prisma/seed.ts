@@ -234,6 +234,22 @@ async function seed(): Promise<void> {
     },
   });
 
+  await prisma.companySecurityPolicy.upsert({
+    where: { companyId: 'seed-company-zenith' },
+    update: {},
+    create: {
+      companyId: 'seed-company-zenith',
+      maxFailedLogins: 5,
+      lockoutMinutes: 15,
+      passwordMinLength: 8,
+      passwordRequireLetter: true,
+      passwordRequireNumber: true,
+      passwordRequireSpecial: false,
+      requireMfaForPrivileged: false,
+      allowSelfRegistration: true,
+    },
+  });
+
   const hrAdmin = await prisma.role.findUniqueOrThrow({ where: { code: 'HR_ADMIN' } });
   const superAdminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SUPER_ADMIN' } });
 

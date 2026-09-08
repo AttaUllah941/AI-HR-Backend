@@ -5,6 +5,7 @@ import {
   ValidationError,
 } from '../../../utils/app-error.js';
 import { PerformanceRepository } from '../repositories/performance.repository.js';
+import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import type {
   CreateFeedbackInput,
   CreateGoalInput,
@@ -22,21 +23,6 @@ import type {
 } from '../validators/performance.validators.js';
 
 type AuthActor = { id: string; permissions: string[] };
-
-function paginationMeta(page: number, pageSize: number, total: number) {
-  return {
-    page,
-    pageSize,
-    total,
-    totalPages: Math.ceil(total / pageSize) || 1,
-  };
-}
-
-function parsePage(params: Record<string, string | undefined>) {
-  const page = Math.max(1, Number(params.page) || 1);
-  const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20));
-  return { page, pageSize };
-}
 
 function countsByKey(
   rows: { status: string; _count: { _all: number } }[],
@@ -234,7 +220,7 @@ export class PerformanceService {
   // —— Goals ——
   async listGoals(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const employeeId = await this.scopedEmployeeId(actor, companyId, params.employeeId);
     const { items, total } = await this.repo.listGoals(companyId, {
       page,
@@ -336,7 +322,7 @@ export class PerformanceService {
   // —— KPIs ——
   async listKpis(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const isActive =
       params.isActive === undefined
         ? undefined
@@ -401,7 +387,7 @@ export class PerformanceService {
   // —— Employee KPIs ——
   async listEmployeeKpis(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const employeeId = await this.scopedEmployeeId(actor, companyId, params.employeeId);
     const year = params.year ? Number(params.year) : undefined;
     if (params.year && (!Number.isFinite(year) || year! < 2000 || year! > 2100)) {
@@ -460,7 +446,7 @@ export class PerformanceService {
   // —— Cycles ——
   async listCycles(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const year = params.year ? Number(params.year) : undefined;
     if (params.year && (!Number.isFinite(year) || year! < 2000 || year! > 2100)) {
       throw new ValidationError('Invalid year');
@@ -559,7 +545,7 @@ export class PerformanceService {
   // —— Reviews ——
   async listReviews(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const employeeId = await this.scopedEmployeeId(actor, companyId, params.employeeId);
     const { items, total } = await this.repo.listReviews(companyId, {
       page,
@@ -703,7 +689,7 @@ export class PerformanceService {
   // —— Feedback ——
   async listFeedback(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
 
     let involvingEmployeeId: string | undefined;
     let fromEmployeeId = params.fromEmployeeId;
@@ -789,7 +775,7 @@ export class PerformanceService {
   // —— Promotions ——
   async listPromotions(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const employeeId = await this.scopedEmployeeId(actor, companyId, params.employeeId);
     const { items, total } = await this.repo.listPromotions(companyId, {
       page,

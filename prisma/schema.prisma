@@ -80,7 +80,10 @@ model Company {
   pushDevices       PushDevice[]
   settings          CompanySettings?
   storedFiles       StoredFile[]
+  securityPolicy    CompanySecurityPolicy?
+  loginAttempts     LoginAttempt[]
 
+  @@index([deletedAt, isActive])
   @@map("companies")
 }
 
@@ -119,10 +122,18 @@ model User {
   pushDevices         PushDevice[]
   preference          UserPreference?
   uploadedFiles       StoredFile[]          @relation("FileUploader")
+  searchBookmarks     SearchBookmark[]
+  recentSearches      RecentSearch[]
+  loginAttempts       LoginAttempt[]
+  failedLoginCount    Int                   @default(0)
+  lockedUntil         DateTime?
 
   @@index([companyId])
   @@index([status])
   @@index([deletedAt])
+  @@index([createdAt])
+  @@index([companyId, status])
+  @@index([companyId, mfaEnabled])
   @@map("users")
 }
 
@@ -199,6 +210,7 @@ model Session {
   @@index([userId])
   @@index([refreshTokenHash])
   @@index([status])
+  @@index([status, expiresAt])
   @@map("sessions")
 }
 
@@ -245,6 +257,7 @@ model AuditLog {
 
   @@index([actorId])
   @@index([entityType, entityId])
+  @@index([entityId])
   @@index([createdAt])
   @@map("audit_logs")
 }
@@ -473,6 +486,8 @@ model Employee {
   @@unique([companyId, employeeCode])
   @@unique([companyId, email])
   @@index([companyId, status])
+  @@index([companyId, createdAt])
+  @@index([companyId, deletedAt])
   @@index([branchId])
   @@index([departmentId])
   @@index([teamId])
@@ -593,6 +608,7 @@ model EmployeeDocument {
   employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
 
   @@index([employeeId])
+  @@index([employeeId, deletedAt])
   @@map("employee_documents")
 }
 
@@ -797,6 +813,7 @@ model LeaveBalance {
   @@unique([employeeId, leaveTypeId, year])
   @@index([companyId, year])
   @@index([employeeId])
+  @@index([leaveTypeId])
   @@map("leave_balances")
 }
 
@@ -1152,6 +1169,7 @@ model Candidate {
 
   @@unique([companyId, email])
   @@index([companyId])
+  @@index([companyId, updatedAt])
   @@index([deletedAt])
   @@map("candidates")
 }
@@ -1178,6 +1196,7 @@ model JobApplication {
 
   @@unique([jobOpeningId, candidateId])
   @@index([companyId, status])
+  @@index([jobOpeningId, status])
   @@index([candidateId])
   @@index([deletedAt])
   @@map("job_applications")
@@ -1556,6 +1575,7 @@ model AiGeneration {
   user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([companyId, feature])
+  @@index([companyId, status])
   @@index([userId])
   @@index([relatedEntityType, relatedEntityId])
   @@index([deletedAt])
@@ -1798,9 +1818,86 @@ model StoredFile {
   candidate  Candidate? @relation(fields: [candidateId], references: [id], onDelete: SetNull)
 
   @@index([companyId, category])
+  @@index([companyId, updatedAt])
   @@index([employeeId])
   @@index([candidateId])
   @@index([uploadedById])
   @@index([deletedAt])
   @@map("stored_files")
+}
+
+model SearchBookmark {
+  id         String   @id @default(cuid())
+  userId     String
+  title      String
+  route      String
+  entityType String?
+  entityId   String   @default("")
+  query      String?
+  icon       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@unique([userId, route, entityId])
+  @@map("search_bookmarks")
+}
+
+model RecentSearch {
+  id          String   @id @default(cuid())
+  userId      String
+  query       String
+  types       String[] @default([])
+  filters     Json?
+  resultCount Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("recent_searches")
+}
+
+model CompanySecurityPolicy {
+  id                         String   @id @default(cuid())
+  companyId                  String   @unique
+  maxFailedLogins            Int      @default(5)
+  lockoutMinutes             Int      @default(15)
+  passwordMinLength          Int      @default(8)
+  passwordRequireLetter      Boolean  @default(true)
+  passwordRequireNumber      Boolean  @default(true)
+  passwordRequireSpecial     Boolean  @default(false)
+  requireMfaForPrivileged    Boolean  @default(false)
+  allowSelfRegistration      Boolean  @default(true)
+  refreshRateLimitPerWindow  Int      @default(60)
+  ipAllowlist                Json?
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("company_security_policies")
+}
+
+model LoginAttempt {
+  id         String   @id @default(cuid())
+  companyId  String?
+  userId     String?
+  email      String
+  success    Boolean
+  reason     String?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([companyId, success, createdAt])
+  @@index([email, createdAt])
+  @@index([userId, createdAt])
+  @@map("login_attempts")
 }

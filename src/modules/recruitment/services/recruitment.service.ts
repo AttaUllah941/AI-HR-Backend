@@ -6,6 +6,7 @@ import {
   ValidationError,
 } from '../../../utils/app-error.js';
 import { RecruitmentRepository } from '../repositories/recruitment.repository.js';
+import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import type {
   AttachResumeInput,
   CompleteInterviewInput,
@@ -23,21 +24,6 @@ import type {
 } from '../validators/recruitment.validators.js';
 
 type AuthActor = { id: string; permissions: string[] };
-
-function paginationMeta(page: number, pageSize: number, total: number) {
-  return {
-    page,
-    pageSize,
-    total,
-    totalPages: Math.ceil(total / pageSize) || 1,
-  };
-}
-
-function parsePage(params: Record<string, string | undefined>) {
-  const page = Math.max(1, Number(params.page) || 1);
-  const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20));
-  return { page, pageSize };
-}
 
 function countsByKey(
   rows: { status: string; _count: { _all: number } }[],
@@ -194,7 +180,7 @@ export class RecruitmentService {
   // —— Jobs ——
   async listJobs(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const { items, total } = await this.repo.listJobs(companyId, {
       page,
       pageSize,
@@ -331,7 +317,7 @@ export class RecruitmentService {
   // —— Candidates ——
   async listCandidates(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const { items, total } = await this.repo.listCandidates(companyId, {
       page,
       pageSize,
@@ -420,7 +406,7 @@ export class RecruitmentService {
   // —— Applications ——
   async listApplications(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const { items, total } = await this.repo.listApplications(companyId, {
       page,
       pageSize,
@@ -517,7 +503,7 @@ export class RecruitmentService {
   // —— Interviews ——
   async listInterviews(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const { items, total } = await this.repo.listInterviews(companyId, {
       page,
       pageSize,
@@ -614,7 +600,7 @@ export class RecruitmentService {
   // —— Offers ——
   async listOffers(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const { items, total } = await this.repo.listOffers(companyId, {
       page,
       pageSize,

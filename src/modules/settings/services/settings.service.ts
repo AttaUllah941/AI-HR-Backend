@@ -8,6 +8,7 @@ import {
 } from '../../../utils/app-error.js';
 import { hashPassword } from '../../../utils/password.js';
 import { SettingsRepository } from '../repositories/settings.repository.js';
+import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import type {
   CreateUserInput,
   UpdateCompanyInput,
@@ -21,21 +22,6 @@ import type {
 
 type AuthActor = { id: string; permissions: string[] };
 type RequestMeta = { ip?: string; userAgent?: string };
-
-function paginationMeta(page: number, pageSize: number, total: number) {
-  return {
-    page,
-    pageSize,
-    total,
-    totalPages: Math.ceil(total / pageSize) || 1,
-  };
-}
-
-function parsePage(params: Record<string, unknown>) {
-  const page = Math.max(1, Number(params.page) || 1);
-  const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20));
-  return { page, pageSize };
-}
 
 function emptyToNull(value: string | null | undefined) {
   if (value === undefined) return undefined;
@@ -349,7 +335,7 @@ export class SettingsService {
 
   async listUsers(actor: AuthActor, params: Record<string, unknown>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const search = typeof params.search === 'string' ? params.search.trim() : undefined;
     const status =
       typeof params.status === 'string' && params.status
@@ -560,7 +546,7 @@ export class SettingsService {
 
   async listAuditLogs(actor: AuthActor, params: Record<string, unknown>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const search = typeof params.search === 'string' ? params.search.trim() : undefined;
     const entityType =
       typeof params.entityType === 'string' ? params.entityType.trim() : undefined;

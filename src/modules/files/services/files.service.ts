@@ -11,24 +11,10 @@ import {
 } from '../../../services/storage/local-file-storage.js';
 import { FilesRepository } from '../repositories/files.repository.js';
 import type { UpdateFileInput } from '../validators/files.validators.js';
+import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 
 type AuthActor = { id: string; permissions: string[] };
 type RequestMeta = { ip?: string; userAgent?: string };
-
-function paginationMeta(page: number, pageSize: number, total: number) {
-  return {
-    page,
-    pageSize,
-    total,
-    totalPages: Math.ceil(total / pageSize) || 1,
-  };
-}
-
-function parsePage(params: Record<string, unknown>) {
-  const page = Math.max(1, Number(params.page) || 1);
-  const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20));
-  return { page, pageSize };
-}
 
 function emptyToNull(value: string | null | undefined) {
   if (value === undefined) return undefined;
@@ -194,7 +180,7 @@ export class FilesService {
 
   async list(actor: AuthActor, params: Record<string, unknown>) {
     const user = await this.requireContext(actor);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const search = typeof params.search === 'string' ? params.search.trim() : undefined;
     const category =
       typeof params.category === 'string' && params.category

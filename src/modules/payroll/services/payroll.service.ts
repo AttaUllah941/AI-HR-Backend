@@ -6,6 +6,7 @@ import {
   ValidationError,
 } from '../../../utils/app-error.js';
 import { PayrollRepository } from '../repositories/payroll.repository.js';
+import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import type {
   CreatePayrollRunInput,
   CreateSalaryComponentInput,
@@ -37,21 +38,6 @@ function computeComponentAmount(
     return roundMoney((basicSalary * value) / 100);
   }
   return roundMoney(value);
-}
-
-function paginationMeta(page: number, pageSize: number, total: number) {
-  return {
-    page,
-    pageSize,
-    total,
-    totalPages: Math.ceil(total / pageSize) || 1,
-  };
-}
-
-function parsePage(params: Record<string, string | undefined>) {
-  const page = Math.max(1, Number(params.page) || 1);
-  const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20));
-  return { page, pageSize };
 }
 
 export class PayrollService {
@@ -231,7 +217,7 @@ export class PayrollService {
   // —— Components ——
   async listComponents(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const { items, total } = await this.repo.listComponents(companyId, { page, pageSize });
     return { items, pagination: paginationMeta(page, pageSize, total) };
   }
@@ -295,7 +281,7 @@ export class PayrollService {
   // —— Structures ——
   async listStructures(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     let employeeId = params.employeeId || undefined;
     if (!this.canManageCompanyWide(actor)) {
       employeeId = await this.resolveEmployeeId(companyId, actor.id, null);
@@ -408,7 +394,7 @@ export class PayrollService {
   // —— Runs ——
   async listRuns(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     const year = params.year ? Number(params.year) : undefined;
     const month = params.month ? Number(params.month) : undefined;
     if (year !== undefined && !Number.isFinite(year)) throw new ValidationError('Invalid year');
@@ -723,7 +709,7 @@ export class PayrollService {
     const run = await this.repo.findRunBasic(companyId, runId);
     if (!run) throw new NotFoundError('Payroll run not found');
 
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
     let employeeId = params.employeeId || undefined;
     if (!this.canManageCompanyWide(actor)) {
       employeeId = await this.resolveEmployeeId(companyId, actor.id, null);
@@ -740,7 +726,7 @@ export class PayrollService {
   // —— Payslips ——
   async listPayslips(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePage(params);
+    const { page, pageSize } = parsePagination(params);
 
     let employeeId = params.employeeId || undefined;
     if (!this.canManageCompanyWide(actor)) {
