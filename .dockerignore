@@ -5,6 +5,7 @@ logs
 uploads
 .git
 .github
+.gitignore
 .agents
 .claude
 .windsurf
