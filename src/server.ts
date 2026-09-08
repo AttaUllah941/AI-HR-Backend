@@ -2,14 +2,20 @@ import { createApp } from './app.js';
 import { connectDatabase, disconnectDatabase } from './config/database.js';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
+import { assertProductionSecrets } from './utils/security.js';
 
 async function bootstrap(): Promise<void> {
+  assertProductionSecrets();
+
   try {
     await connectDatabase();
   } catch (error) {
-    logger.warn('Database connection deferred — ensure PostgreSQL is running', {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    logger.warn(
+      'Database connection deferred — run `npm run db:up` and keep PostgreSQL running on localhost:5432',
+      {
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
   }
 
   const app = createApp();

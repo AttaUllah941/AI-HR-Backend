@@ -184,4 +184,34 @@ export class AuthRepository {
   }) {
     return prisma.auditLog.create({ data });
   }
+
+  getSecurityPolicy(companyId: string) {
+    return prisma.companySecurityPolicy.upsert({
+      where: { companyId },
+      create: { companyId },
+      update: {},
+    });
+  }
+
+  createLoginAttempt(data: {
+    companyId?: string | null;
+    userId?: string | null;
+    email: string;
+    success: boolean;
+    reason?: string | null;
+    ipAddress?: string;
+    userAgent?: string;
+  }) {
+    return prisma.loginAttempt.create({
+      data: {
+        companyId: data.companyId ?? null,
+        userId: data.userId ?? null,
+        email: data.email.toLowerCase(),
+        success: data.success,
+        reason: data.reason ?? null,
+        ipAddress: data.ipAddress ?? null,
+        userAgent: data.userAgent ?? null,
+      },
+    });
+  }
 }

@@ -2,7 +2,23 @@ import { Router } from 'express';
 import { asyncHandler } from '../../middleware/async-handler.js';
 import { authMiddleware } from '../../middleware/auth.middleware.js';
 import { requirePermissions } from '../../middleware/rbac.middleware.js';
+import { validateBody } from '../../middleware/validate.middleware.js';
 import { PerformanceController } from './controllers/performance.controller.js';
+import {
+  createFeedbackSchema,
+  createGoalSchema,
+  createKpiSchema,
+  createPromotionSchema,
+  createReviewCycleSchema,
+  createReviewSchema,
+  reviewPromotionSchema,
+  updateGoalSchema,
+  updateKpiSchema,
+  updatePromotionSchema,
+  updateReviewCycleSchema,
+  updateReviewSchema,
+  upsertEmployeeKpiSchema,
+} from './validators/performance.validators.js';
 
 const controller = new PerformanceController();
 
@@ -15,17 +31,111 @@ performanceRouter.get(
   requirePermissions('performance:view'),
   asyncHandler(controller.summary),
 );
-
 performanceRouter.get(
-  '/top-performers',
+  '/me/summary',
   requirePermissions('performance:view'),
-  asyncHandler(controller.topPerformers),
+  asyncHandler(controller.mySummary),
+);
+performanceRouter.get(
+  '/report',
+  requirePermissions('performance:view'),
+  asyncHandler(controller.report),
 );
 
 performanceRouter.get(
-  '/insights',
+  '/goals',
   requirePermissions('performance:view'),
-  asyncHandler(controller.insights),
+  asyncHandler(controller.listGoals),
+);
+performanceRouter.post(
+  '/goals',
+  requirePermissions('performance:create'),
+  validateBody(createGoalSchema),
+  asyncHandler(controller.createGoal),
+);
+performanceRouter.get(
+  '/goals/:id',
+  requirePermissions('performance:view'),
+  asyncHandler(controller.getGoal),
+);
+performanceRouter.patch(
+  '/goals/:id',
+  requirePermissions('performance:update'),
+  validateBody(updateGoalSchema),
+  asyncHandler(controller.updateGoal),
+);
+performanceRouter.delete(
+  '/goals/:id',
+  requirePermissions('performance:delete'),
+  asyncHandler(controller.deleteGoal),
+);
+
+performanceRouter.get(
+  '/kpis',
+  requirePermissions('performance:view'),
+  asyncHandler(controller.listKpis),
+);
+performanceRouter.post(
+  '/kpis',
+  requirePermissions('performance:create'),
+  validateBody(createKpiSchema),
+  asyncHandler(controller.createKpi),
+);
+performanceRouter.patch(
+  '/kpis/:id',
+  requirePermissions('performance:update'),
+  validateBody(updateKpiSchema),
+  asyncHandler(controller.updateKpi),
+);
+performanceRouter.delete(
+  '/kpis/:id',
+  requirePermissions('performance:delete'),
+  asyncHandler(controller.deleteKpi),
+);
+
+performanceRouter.get(
+  '/employee-kpis',
+  requirePermissions('performance:view'),
+  asyncHandler(controller.listEmployeeKpis),
+);
+performanceRouter.post(
+  '/employee-kpis',
+  requirePermissions('performance:create'),
+  validateBody(upsertEmployeeKpiSchema),
+  asyncHandler(controller.upsertEmployeeKpi),
+);
+
+performanceRouter.get(
+  '/cycles',
+  requirePermissions('performance:view'),
+  asyncHandler(controller.listCycles),
+);
+performanceRouter.post(
+  '/cycles',
+  requirePermissions('performance:create'),
+  validateBody(createReviewCycleSchema),
+  asyncHandler(controller.createCycle),
+);
+performanceRouter.patch(
+  '/cycles/:id',
+  requirePermissions('performance:update'),
+  validateBody(updateReviewCycleSchema),
+  asyncHandler(controller.updateCycle),
+);
+performanceRouter.delete(
+  '/cycles/:id',
+  requirePermissions('performance:delete'),
+  asyncHandler(controller.deleteCycle),
+);
+performanceRouter.post(
+  '/cycles/:id/activate',
+  requirePermissions('performance:update'),
+  asyncHandler(controller.activateCycle),
+);
+performanceRouter.post(
+  '/cycles/:id/close',
+  requirePermissions('performance:update'),
+  asyncHandler(controller.closeCycle),
 );
 
 performanceRouter.get(
@@ -33,21 +143,96 @@ performanceRouter.get(
   requirePermissions('performance:view'),
   asyncHandler(controller.listReviews),
 );
-
 performanceRouter.post(
   '/reviews',
   requirePermissions('performance:create'),
+  validateBody(createReviewSchema),
   asyncHandler(controller.createReview),
 );
-
+performanceRouter.get(
+  '/reviews/:id',
+  requirePermissions('performance:view'),
+  asyncHandler(controller.getReview),
+);
 performanceRouter.patch(
   '/reviews/:id',
   requirePermissions('performance:update'),
+  validateBody(updateReviewSchema),
   asyncHandler(controller.updateReview),
 );
+performanceRouter.post(
+  '/reviews/:id/submit',
+  requirePermissions('performance:update'),
+  asyncHandler(controller.submitReview),
+);
+performanceRouter.post(
+  '/reviews/:id/acknowledge',
+  requirePermissions('performance:update'),
+  asyncHandler(controller.acknowledgeReview),
+);
+performanceRouter.post(
+  '/reviews/:id/complete',
+  requirePermissions('performance:approve'),
+  asyncHandler(controller.completeReview),
+);
 
+performanceRouter.get(
+  '/feedback',
+  requirePermissions('performance:view'),
+  asyncHandler(controller.listFeedback),
+);
+performanceRouter.post(
+  '/feedback',
+  requirePermissions('performance:create'),
+  validateBody(createFeedbackSchema),
+  asyncHandler(controller.createFeedback),
+);
+performanceRouter.get(
+  '/feedback/:id',
+  requirePermissions('performance:view'),
+  asyncHandler(controller.getFeedback),
+);
 performanceRouter.delete(
-  '/reviews/:id',
+  '/feedback/:id',
   requirePermissions('performance:delete'),
-  asyncHandler(controller.removeReview),
+  asyncHandler(controller.deleteFeedback),
+);
+
+performanceRouter.get(
+  '/promotions',
+  requirePermissions('performance:view'),
+  asyncHandler(controller.listPromotions),
+);
+performanceRouter.post(
+  '/promotions',
+  requirePermissions('performance:create'),
+  validateBody(createPromotionSchema),
+  asyncHandler(controller.createPromotion),
+);
+performanceRouter.get(
+  '/promotions/:id',
+  requirePermissions('performance:view'),
+  asyncHandler(controller.getPromotion),
+);
+performanceRouter.patch(
+  '/promotions/:id',
+  requirePermissions('performance:update'),
+  validateBody(updatePromotionSchema),
+  asyncHandler(controller.updatePromotion),
+);
+performanceRouter.post(
+  '/promotions/:id/submit',
+  requirePermissions('performance:update'),
+  asyncHandler(controller.submitPromotion),
+);
+performanceRouter.post(
+  '/promotions/:id/review',
+  requirePermissions('performance:approve'),
+  validateBody(reviewPromotionSchema),
+  asyncHandler(controller.reviewPromotion),
+);
+performanceRouter.post(
+  '/promotions/:id/withdraw',
+  requirePermissions('performance:delete'),
+  asyncHandler(controller.withdrawPromotion),
 );

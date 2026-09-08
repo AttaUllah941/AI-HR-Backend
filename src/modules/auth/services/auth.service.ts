@@ -9,8 +9,6 @@ import { hashPassword, verifyPassword } from '../../../utils/password.js';
 import { generateRawToken, hashToken } from '../../../utils/token-hash.js';
 import {
   getRefreshExpiryDate,
-  getRefreshExpiresIn,
-  msToJwtDuration,
   signAccessToken,
   signMfaChallengeToken,
   signRefreshToken,
@@ -20,6 +18,12 @@ import {
 import { buildMfaUri, createMfaSecret, verifyMfaCode } from '../../../utils/mfa.js';
 import { emailService } from '../../../services/email/email.service.js';
 import { isDevelopment } from '../../../config/env.js';
+import {
+  isClientIpAllowed,
+  normalizeIpAllowlist,
+  PRIVILEGED_ROLES,
+  validatePasswordAgainstPolicy,
+} from '../../../utils/security.js';
 import { AuthRepository, type UserWithAuth } from '../repositories/auth.repository.js';
 import { extractRolesAndPermissions, toPublicUser } from '../dto/auth.dto.js';
 import type {
@@ -47,6 +51,19 @@ export class AuthService {
     if (input.companyName) {
       const company = await this.repo.createCompany(input.companyName);
       companyId = company.id;
+      await this.repo.getSecurityPolicy(company.id);
+    }
+
+    // Self-registration into an existing company is not supported via this endpoint;
+    // companyName creates a new tenant. Policy defaults apply to password strength.
+    const passwordError = validatePasswordAgainstPolicy(input.password, {
+      passwordMinLength: 8,
+      passwordRequireLetter: true,
+      passwordRequireNumber: true,
+      passwordRequireSpecial: false,
+    });
+    if (passwordError) {
+      throw new ValidationError(passwordError);
     }
 
     const passwordHash = await hashPassword(input.password);
@@ -61,9 +78,10 @@ export class AuthService {
     });
 
     const rawVerifyToken = generateRawToken();
+    const verificationTokenHash = hashToken(rawVerifyToken);
     await this.repo.createEmailVerificationToken(
       user.id,
-      hashToken(rawVerifyToken),
+      verificationTokenHash,
       new Date(Date.now() + 24 * 60 * 60 * 1000),
     );
 
@@ -73,6 +91,19 @@ export class AuthService {
       subject: 'Verify your Zenith HR email',
       text: `Welcome to Zenith HR. Verify your email: ${verifyLink}`,
     });
+
+    // Local/dev has no real inbox — activate immediately so login works after register.
+    let publicUser = user;
+    if (isDevelopment) {
+      const verification = await this.repo.findEmailVerificationToken(verificationTokenHash);
+      if (verification) {
+        await this.repo.markEmailVerificationUsed(verification.id);
+      }
+      publicUser = await this.repo.updateUser(user.id, {
+        status: 'ACTIVE',
+        emailVerifiedAt: new Date(),
+      });
+    }
 
     await this.repo.createAuditLog({
       actorId: user.id,
@@ -84,27 +115,74 @@ export class AuthService {
     });
 
     return {
-      user: toPublicUser(user),
+      user: toPublicUser(publicUser),
       ...(isDevelopment ? { verificationToken: rawVerifyToken } : {}),
     };
   }
 
   async login(input: LoginInput, meta: { ip?: string; userAgent?: string }) {
-    const user = await this.repo.findByEmail(input.email);
+    const email = input.email.toLowerCase();
+    const user = await this.repo.findByEmail(email);
+
+    const policy = user?.companyId
+      ? await this.repo.getSecurityPolicy(user.companyId)
+      : null;
+
+    if (policy) {
+      let allowlist: string[] = [];
+      try {
+        allowlist = normalizeIpAllowlist(policy.ipAllowlist);
+      } catch {
+        allowlist = [];
+      }
+      if (!isClientIpAllowed(meta.ip, allowlist)) {
+        await this.repo.createLoginAttempt({
+          companyId: user?.companyId,
+          userId: user?.id,
+          email,
+          success: false,
+          reason: 'ip_blocked',
+          ipAddress: meta.ip,
+          userAgent: meta.userAgent,
+        });
+        throw new ForbiddenError('Sign-in from this network is not allowed');
+      }
+    }
+
     if (!user) {
+      await this.repo.createLoginAttempt({
+        email,
+        success: false,
+        reason: 'unknown_user',
+        ipAddress: meta.ip,
+        userAgent: meta.userAgent,
+      });
       throw new UnauthorizedError('Invalid email or password');
     }
 
-    const valid = await verifyPassword(input.password, user.passwordHash);
-    if (!valid) {
-      throw new UnauthorizedError('Invalid email or password');
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      await this.repo.createLoginAttempt({
+        companyId: user.companyId,
+        userId: user.id,
+        email,
+        success: false,
+        reason: 'account_locked',
+        ipAddress: meta.ip,
+        userAgent: meta.userAgent,
+      });
+      throw new ForbiddenError('Account is temporarily locked due to failed sign-in attempts');
     }
 
-    if (
-      user.status === 'SUSPENDED' ||
-      user.status === 'DELETED' ||
-      user.status === 'INACTIVE'
-    ) {
+    if (user.status === 'SUSPENDED' || user.status === 'DELETED') {
+      await this.repo.createLoginAttempt({
+        companyId: user.companyId,
+        userId: user.id,
+        email,
+        success: false,
+        reason: 'status_blocked',
+        ipAddress: meta.ip,
+        userAgent: meta.userAgent,
+      });
       throw new ForbiddenError('Account is not allowed to sign in');
     }
 
@@ -112,12 +190,46 @@ export class AuthService {
       throw new ForbiddenError('Please verify your email before signing in');
     }
 
-    if (user.mfaEnabled && user.mfaSecret) {
-      const mfaToken = signMfaChallengeToken({
-        sub: user.id,
-        email: user.email,
-        remember: Boolean(input.remember),
+    const valid = await verifyPassword(input.password, user.passwordHash);
+    if (!valid) {
+      const maxFailed = policy?.maxFailedLogins ?? 5;
+      const lockoutMinutes = policy?.lockoutMinutes ?? 15;
+      const nextCount = (user.failedLoginCount ?? 0) + 1;
+      const shouldLock = nextCount >= maxFailed;
+      await this.repo.updateUser(user.id, {
+        failedLoginCount: nextCount,
+        ...(shouldLock
+          ? { lockedUntil: new Date(Date.now() + lockoutMinutes * 60_000) }
+          : {}),
       });
+      await this.repo.createLoginAttempt({
+        companyId: user.companyId,
+        userId: user.id,
+        email,
+        success: false,
+        reason: shouldLock ? 'locked_after_failures' : 'bad_password',
+        ipAddress: meta.ip,
+        userAgent: meta.userAgent,
+      });
+      throw new UnauthorizedError('Invalid email or password');
+    }
+
+    await this.repo.updateUser(user.id, {
+      failedLoginCount: 0,
+      lockedUntil: null,
+    });
+
+    if (user.mfaEnabled && user.mfaSecret) {
+      await this.repo.createLoginAttempt({
+        companyId: user.companyId,
+        userId: user.id,
+        email,
+        success: true,
+        reason: 'mfa_challenge',
+        ipAddress: meta.ip,
+        userAgent: meta.userAgent,
+      });
+      const mfaToken = signMfaChallengeToken({ sub: user.id, email: user.email });
       return {
         mfaRequired: true as const,
         mfaToken,
@@ -130,7 +242,28 @@ export class AuthService {
       };
     }
 
-    return this.issueSession(user, meta, 'auth.login', Boolean(input.remember));
+    const { roles } = extractRolesAndPermissions(user);
+    const privileged = roles.some((r) => PRIVILEGED_ROLES.has(r));
+    const securityWarnings: string[] = [];
+    if (policy?.requireMfaForPrivileged && privileged && !user.mfaEnabled) {
+      securityWarnings.push('MFA_REQUIRED_FOR_PRIVILEGED');
+    }
+
+    const session = await this.issueSession(user, meta, 'auth.login', input.remember);
+    await this.repo.createLoginAttempt({
+      companyId: user.companyId,
+      userId: user.id,
+      email,
+      success: true,
+      reason: 'ok',
+      ipAddress: meta.ip,
+      userAgent: meta.userAgent,
+    });
+
+    return {
+      ...session,
+      ...(securityWarnings.length ? { securityWarnings } : {}),
+    };
   }
 
   async verifyMfa(input: MfaVerifyInput, meta: { ip?: string; userAgent?: string }) {
@@ -146,11 +279,19 @@ export class AuthService {
       throw new UnauthorizedError('MFA is not enabled for this account');
     }
 
+    if (user.status === 'PENDING_VERIFICATION') {
+      throw new ForbiddenError('Please verify your email before signing in');
+    }
+
+    if (user.status === 'SUSPENDED' || user.status === 'DELETED') {
+      throw new ForbiddenError('Account is not allowed to sign in');
+    }
+
     if (!verifyMfaCode(user.mfaSecret, input.code)) {
       throw new UnauthorizedError('Invalid authentication code');
     }
 
-    return this.issueSession(user, meta, 'auth.mfa.verify', Boolean(challenge.remember));
+    return this.issueSession(user, meta, 'auth.mfa.verify');
   }
 
   async refresh(input: RefreshInput) {
@@ -172,7 +313,6 @@ export class AuthService {
       !user ||
       user.status === 'SUSPENDED' ||
       user.status === 'DELETED' ||
-      user.status === 'INACTIVE' ||
       user.status === 'PENDING_VERIFICATION'
     ) {
       throw new UnauthorizedError('Account is not allowed to refresh');
@@ -184,15 +324,13 @@ export class AuthService {
       email: user.email,
       roles,
       permissions,
+      sid: session.id,
     });
 
-    // Preserve remaining session lifetime on rotation (do not extend beyond DB expiry).
-    const refreshToken = signRefreshToken(
-      { sub: user.id, sid: session.id },
-      msToJwtDuration(Math.max(session.expiresAt.getTime() - Date.now(), 60_000)),
-    );
+    const refreshToken = signRefreshToken({ sub: user.id, sid: session.id });
     await this.repo.updateSession(session.id, {
       refreshTokenHash: hashToken(refreshToken),
+      expiresAt: getRefreshExpiryDate(),
     });
 
     return {
@@ -241,8 +379,6 @@ export class AuthService {
   async forgotPassword(input: ForgotPasswordInput) {
     const user = await this.repo.findByEmail(input.email);
     if (user) {
-      await this.repo.invalidatePasswordResetTokens(user.id);
-
       const rawToken = generateRawToken();
       await this.repo.createPasswordResetToken(
         user.id,
@@ -311,10 +447,6 @@ export class AuthService {
       throw new NotFoundError('User not found');
     }
 
-    if (user.mfaEnabled) {
-      throw new ConflictError('MFA is already enabled for this account');
-    }
-
     const secret = createMfaSecret();
     await this.repo.updateUser(userId, { mfaSecret: secret, mfaEnabled: false });
 
@@ -378,12 +510,12 @@ export class AuthService {
     remember = false,
   ) {
     const { roles, permissions } = extractRolesAndPermissions(user);
-    const refreshExpiresIn = getRefreshExpiresIn(remember);
+    const refreshExpiresIn = remember ? '30d' : undefined;
 
     const session = await this.repo.createSession({
       userId: user.id,
       refreshTokenHash: 'pending',
-      expiresAt: getRefreshExpiryDate(remember),
+      expiresAt: getRefreshExpiryDate(refreshExpiresIn),
       ipAddress: meta.ip,
       userAgent: meta.userAgent,
     });
@@ -393,6 +525,7 @@ export class AuthService {
       email: user.email,
       roles,
       permissions,
+      sid: session.id,
     });
     const refreshToken = signRefreshToken({ sub: user.id, sid: session.id }, refreshExpiresIn);
 
@@ -408,7 +541,6 @@ export class AuthService {
       entityId: user.id,
       ipAddress: meta.ip,
       userAgent: meta.userAgent,
-      metadata: { remember },
     });
 
     return {

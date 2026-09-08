@@ -1,77 +1,136 @@
 import type { Request, Response } from 'express';
 import { successResponse } from '../../../interfaces/api-response.js';
 import { OrganizationService } from '../services/organization.service.js';
-import {
-  createDepartmentSchema,
-  createLocationSchema,
-  listQuerySchema,
-  updateCompanySchema,
-  updateDepartmentSchema,
-  updateLocationSchema,
+import type {
+  CreateBranchInput,
+  CreateDepartmentInput,
+  CreateDesignationInput,
+  CreateTeamInput,
+  UpdateBranchInput,
+  UpdateDepartmentInput,
+  UpdateDesignationInput,
+  UpdateTeamInput,
 } from '../validators/organization.validators.js';
 
 export class OrganizationController {
   constructor(private readonly service = new OrganizationService()) {}
 
+  private actor(req: Request) {
+    return {
+      id: req.user!.id,
+      permissions: req.user!.permissions,
+    };
+  }
+
   overview = async (req: Request, res: Response): Promise<void> => {
-    const data = await this.service.getOverview(req.user!.id);
+    const data = await this.service.getOverview(this.actor(req));
     res.json(successResponse(data, 'Organization overview'));
   };
 
-  getCompany = async (req: Request, res: Response): Promise<void> => {
-    const data = await this.service.getCompany(req.user!.id);
-    res.json(successResponse(data, 'Company profile'));
+  chart = async (req: Request, res: Response): Promise<void> => {
+    const data = await this.service.getOrgChart(this.actor(req));
+    res.json(successResponse(data, 'Organization chart'));
   };
 
-  updateCompany = async (req: Request, res: Response): Promise<void> => {
-    const input = updateCompanySchema.parse(req.body);
-    const data = await this.service.updateCompany(req.user!.id, input);
-    res.json(successResponse(data, 'Company updated'));
+  listBranches = async (req: Request, res: Response): Promise<void> => {
+    const data = await this.service.listBranches(this.actor(req));
+    res.json(successResponse(data, 'Branches'));
+  };
+
+  createBranch = async (req: Request, res: Response): Promise<void> => {
+    const data = await this.service.createBranch(this.actor(req), req.body as CreateBranchInput);
+    res.status(201).json(successResponse(data, 'Branch created'));
+  };
+
+  updateBranch = async (req: Request, res: Response): Promise<void> => {
+    const data = await this.service.updateBranch(
+      this.actor(req),
+      req.params.id as string,
+      req.body as UpdateBranchInput,
+    );
+    res.json(successResponse(data, 'Branch updated'));
+  };
+
+  deleteBranch = async (req: Request, res: Response): Promise<void> => {
+    const data = await this.service.deleteBranch(this.actor(req), req.params.id as string);
+    res.json(successResponse(data, 'Branch deleted'));
   };
 
   listDepartments = async (req: Request, res: Response): Promise<void> => {
-    const query = listQuerySchema.parse(req.query);
-    const data = await this.service.listDepartments(req.user!.id, query);
+    const data = await this.service.listDepartments(this.actor(req));
     res.json(successResponse(data, 'Departments'));
   };
 
   createDepartment = async (req: Request, res: Response): Promise<void> => {
-    const input = createDepartmentSchema.parse(req.body);
-    const data = await this.service.createDepartment(req.user!.id, input);
+    const data = await this.service.createDepartment(
+      this.actor(req),
+      req.body as CreateDepartmentInput,
+    );
     res.status(201).json(successResponse(data, 'Department created'));
   };
 
   updateDepartment = async (req: Request, res: Response): Promise<void> => {
-    const input = updateDepartmentSchema.parse(req.body);
-    const data = await this.service.updateDepartment(req.user!.id, String(req.params.id), input);
+    const data = await this.service.updateDepartment(
+      this.actor(req),
+      req.params.id as string,
+      req.body as UpdateDepartmentInput,
+    );
     res.json(successResponse(data, 'Department updated'));
   };
 
   deleteDepartment = async (req: Request, res: Response): Promise<void> => {
-    const data = await this.service.deleteDepartment(req.user!.id, String(req.params.id));
+    const data = await this.service.deleteDepartment(this.actor(req), req.params.id as string);
     res.json(successResponse(data, 'Department deleted'));
   };
 
-  listLocations = async (req: Request, res: Response): Promise<void> => {
-    const query = listQuerySchema.parse(req.query);
-    const data = await this.service.listLocations(req.user!.id, query);
-    res.json(successResponse(data, 'Locations'));
+  listTeams = async (req: Request, res: Response): Promise<void> => {
+    const data = await this.service.listTeams(this.actor(req));
+    res.json(successResponse(data, 'Teams'));
   };
 
-  createLocation = async (req: Request, res: Response): Promise<void> => {
-    const input = createLocationSchema.parse(req.body);
-    const data = await this.service.createLocation(req.user!.id, input);
-    res.status(201).json(successResponse(data, 'Location created'));
+  createTeam = async (req: Request, res: Response): Promise<void> => {
+    const data = await this.service.createTeam(this.actor(req), req.body as CreateTeamInput);
+    res.status(201).json(successResponse(data, 'Team created'));
   };
 
-  updateLocation = async (req: Request, res: Response): Promise<void> => {
-    const input = updateLocationSchema.parse(req.body);
-    const data = await this.service.updateLocation(req.user!.id, String(req.params.id), input);
-    res.json(successResponse(data, 'Location updated'));
+  updateTeam = async (req: Request, res: Response): Promise<void> => {
+    const data = await this.service.updateTeam(
+      this.actor(req),
+      req.params.id as string,
+      req.body as UpdateTeamInput,
+    );
+    res.json(successResponse(data, 'Team updated'));
   };
 
-  deleteLocation = async (req: Request, res: Response): Promise<void> => {
-    const data = await this.service.deleteLocation(req.user!.id, String(req.params.id));
-    res.json(successResponse(data, 'Location deleted'));
+  deleteTeam = async (req: Request, res: Response): Promise<void> => {
+    const data = await this.service.deleteTeam(this.actor(req), req.params.id as string);
+    res.json(successResponse(data, 'Team deleted'));
+  };
+
+  listDesignations = async (req: Request, res: Response): Promise<void> => {
+    const data = await this.service.listDesignations(this.actor(req));
+    res.json(successResponse(data, 'Designations'));
+  };
+
+  createDesignation = async (req: Request, res: Response): Promise<void> => {
+    const data = await this.service.createDesignation(
+      this.actor(req),
+      req.body as CreateDesignationInput,
+    );
+    res.status(201).json(successResponse(data, 'Designation created'));
+  };
+
+  updateDesignation = async (req: Request, res: Response): Promise<void> => {
+    const data = await this.service.updateDesignation(
+      this.actor(req),
+      req.params.id as string,
+      req.body as UpdateDesignationInput,
+    );
+    res.json(successResponse(data, 'Designation updated'));
+  };
+
+  deleteDesignation = async (req: Request, res: Response): Promise<void> => {
+    const data = await this.service.deleteDesignation(this.actor(req), req.params.id as string);
+    res.json(successResponse(data, 'Designation deleted'));
   };
 }

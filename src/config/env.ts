@@ -17,6 +17,19 @@ const envSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900_000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(200),
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'http', 'debug']).default('info'),
+  // AI — keys stay server-side only; mock works without a key
+  AI_PROVIDER: z.enum(['mock', 'openai']).default('mock'),
+  AI_API_KEY: z.string().optional().default(''),
+  AI_BASE_URL: z.string().optional().default('https://api.openai.com/v1'),
+  AI_MODEL: z.string().optional().default('gpt-4o-mini'),
+  // Email — console sink by default; smtp posts to EMAIL_SMTP_URL relay
+  EMAIL_PROVIDER: z.enum(['console', 'smtp']).default('console'),
+  EMAIL_FROM: z.string().optional().default('noreply@zenith.local'),
+  EMAIL_SMTP_URL: z.string().optional().default(''),
+  EMAIL_API_KEY: z.string().optional().default(''),
+  // Files — local disk by default; company settings may note cloud providers
+  FILE_STORAGE_ROOT: z.string().optional().default('uploads'),
+  FILE_MAX_BYTES: z.coerce.number().int().positive().default(10_485_760),
 });
 
 const parsed = envSchema.safeParse(process.env);

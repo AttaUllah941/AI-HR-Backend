@@ -2,7 +2,18 @@ import { Router } from 'express';
 import { asyncHandler } from '../../middleware/async-handler.js';
 import { authMiddleware } from '../../middleware/auth.middleware.js';
 import { requirePermissions } from '../../middleware/rbac.middleware.js';
+import { validateBody } from '../../middleware/validate.middleware.js';
 import { OrganizationController } from './controllers/organization.controller.js';
+import {
+  createBranchSchema,
+  createDepartmentSchema,
+  createDesignationSchema,
+  createTeamSchema,
+  updateBranchSchema,
+  updateDepartmentSchema,
+  updateDesignationSchema,
+  updateTeamSchema,
+} from './validators/organization.validators.js';
 
 const controller = new OrganizationController();
 
@@ -15,17 +26,33 @@ organizationRouter.get(
   requirePermissions('organization:view'),
   asyncHandler(controller.overview),
 );
-
 organizationRouter.get(
-  '/company',
+  '/chart',
   requirePermissions('organization:view'),
-  asyncHandler(controller.getCompany),
+  asyncHandler(controller.chart),
 );
 
+organizationRouter.get(
+  '/branches',
+  requirePermissions('organization:view'),
+  asyncHandler(controller.listBranches),
+);
+organizationRouter.post(
+  '/branches',
+  requirePermissions('organization:create'),
+  validateBody(createBranchSchema),
+  asyncHandler(controller.createBranch),
+);
 organizationRouter.patch(
-  '/company',
+  '/branches/:id',
   requirePermissions('organization:update'),
-  asyncHandler(controller.updateCompany),
+  validateBody(updateBranchSchema),
+  asyncHandler(controller.updateBranch),
+);
+organizationRouter.delete(
+  '/branches/:id',
+  requirePermissions('organization:delete'),
+  asyncHandler(controller.deleteBranch),
 );
 
 organizationRouter.get(
@@ -33,19 +60,18 @@ organizationRouter.get(
   requirePermissions('organization:view'),
   asyncHandler(controller.listDepartments),
 );
-
 organizationRouter.post(
   '/departments',
   requirePermissions('organization:create'),
+  validateBody(createDepartmentSchema),
   asyncHandler(controller.createDepartment),
 );
-
 organizationRouter.patch(
   '/departments/:id',
   requirePermissions('organization:update'),
+  validateBody(updateDepartmentSchema),
   asyncHandler(controller.updateDepartment),
 );
-
 organizationRouter.delete(
   '/departments/:id',
   requirePermissions('organization:delete'),
@@ -53,25 +79,47 @@ organizationRouter.delete(
 );
 
 organizationRouter.get(
-  '/locations',
+  '/teams',
   requirePermissions('organization:view'),
-  asyncHandler(controller.listLocations),
+  asyncHandler(controller.listTeams),
 );
-
 organizationRouter.post(
-  '/locations',
+  '/teams',
   requirePermissions('organization:create'),
-  asyncHandler(controller.createLocation),
+  validateBody(createTeamSchema),
+  asyncHandler(controller.createTeam),
 );
-
 organizationRouter.patch(
-  '/locations/:id',
+  '/teams/:id',
   requirePermissions('organization:update'),
-  asyncHandler(controller.updateLocation),
+  validateBody(updateTeamSchema),
+  asyncHandler(controller.updateTeam),
+);
+organizationRouter.delete(
+  '/teams/:id',
+  requirePermissions('organization:delete'),
+  asyncHandler(controller.deleteTeam),
 );
 
+organizationRouter.get(
+  '/designations',
+  requirePermissions('organization:view'),
+  asyncHandler(controller.listDesignations),
+);
+organizationRouter.post(
+  '/designations',
+  requirePermissions('organization:create'),
+  validateBody(createDesignationSchema),
+  asyncHandler(controller.createDesignation),
+);
+organizationRouter.patch(
+  '/designations/:id',
+  requirePermissions('organization:update'),
+  validateBody(updateDesignationSchema),
+  asyncHandler(controller.updateDesignation),
+);
 organizationRouter.delete(
-  '/locations/:id',
+  '/designations/:id',
   requirePermissions('organization:delete'),
-  asyncHandler(controller.deleteLocation),
+  asyncHandler(controller.deleteDesignation),
 );

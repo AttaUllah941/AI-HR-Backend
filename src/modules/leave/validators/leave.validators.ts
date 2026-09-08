@@ -1,66 +1,74 @@
 import { z } from 'zod';
 
-const blankToUndefined = (value: unknown) =>
-  value === '' || value === null || value === undefined ? undefined : value;
+const optionalString = (max: number) =>
+  z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().max(max).optional().nullable(),
+  );
 
-export const leaveTypeSchema = z.enum(['ANNUAL', 'SICK', 'PERSONAL']);
-export const leaveStatusSchema = z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED']);
+const requiredDate = z.coerce.date();
+const leaveDayType = z.enum(['FULL_DAY', 'HALF_DAY_AM', 'HALF_DAY_PM']);
+const leaveRequestStatus = z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED']);
 
-export const leaveListQuerySchema = z.object({
-  status: leaveStatusSchema.optional(),
-  leaveType: leaveTypeSchema.optional(),
-  search: z.string().trim().max(120).optional(),
-  page: z.coerce.number().int().positive().default(1),
-  pageSize: z.coerce.number().int().positive().max(100).default(20),
+export const createLeaveTypeSchema = z.object({
+  name: z.string().min(1).max(150),
+  code: z.string().min(1).max(50),
+  description: optionalString(1000),
+  color: z
+    .string()
+    .regex(/^#([0-9a-fA-F]{6})$/, 'Color must be a hex value like #3b82f6')
+    .optional(),
+  isPaid: z.boolean().optional(),
+  requiresApproval: z.boolean().optional(),
+  allowHalfDay: z.boolean().optional(),
+  maxDaysPerYear: z.number().int().min(0).max(365).optional(),
+  carryForwardDays: z.number().int().min(0).max(365).optional(),
+  isActive: z.boolean().optional(),
 });
 
-export const leavePendingQuerySchema = z.object({
-  limit: z.coerce.number().int().positive().max(50).default(10),
+export const updateLeaveTypeSchema = createLeaveTypeSchema.partial();
+
+export const updateLeavePolicySchema = z.object({
+  allowNegativeBalance: z.boolean().optional(),
+  countWeekends: z.boolean().optional(),
+  countHolidays: z.boolean().optional(),
+  minNoticeDays: z.number().int().min(0).max(90).optional(),
 });
 
-export const leaveHolidaysQuerySchema = z.object({
-  limit: z.coerce.number().int().positive().max(50).default(8),
-  from: z.preprocess(blankToUndefined, z.coerce.date().optional()),
+export const upsertLeaveBalanceSchema = z.object({
+  employeeId: z.string().min(1),
+  leaveTypeId: z.string().min(1),
+  year: z.number().int().min(2000).max(2100),
+  entitled: z.number().min(0).max(365).optional(),
+  carriedForward: z.number().min(0).max(365).optional(),
 });
 
-export const createLeaveRequestSchema = z
-  .object({
-    employeeId: z.string().min(1),
-    leaveType: leaveTypeSchema,
-    startDate: z.coerce.date(),
-    endDate: z.coerce.date(),
-    reason: z.preprocess(blankToUndefined, z.string().trim().max(500).optional()),
-  })
-  .superRefine((value, ctx) => {
-    if (value.endDate < value.startDate) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'endDate must be on or after startDate',
-        path: ['endDate'],
-      });
-    }
-  });
+export const createLeaveRequestSchema = z.object({
+  employeeId: optionalString(50),
+  leaveTypeId: z.string().min(1),
+  startDate: requiredDate,
+  endDate: requiredDate,
+  dayType: leaveDayType.optional(),
+  reason: optionalString(2000),
+});
 
-export const updateLeaveRequestSchema = z
-  .object({
-    leaveType: leaveTypeSchema.optional(),
-    startDate: z.coerce.date().optional(),
-    endDate: z.coerce.date().optional(),
-    reason: z.preprocess(blankToUndefined, z.string().trim().max(500).optional().nullable()),
-    status: leaveStatusSchema.optional(),
-  })
-  .superRefine((value, ctx) => {
-    if (value.startDate && value.endDate && value.endDate < value.startDate) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'endDate must be on or after startDate',
-        path: ['endDate'],
-      });
-    }
-  });
+export const updateLeaveRequestSchema = z.object({
+  leaveTypeId: z.string().min(1).optional(),
+  startDate: requiredDate.optional(),
+  endDate: requiredDate.optional(),
+  dayType: leaveDayType.optional(),
+  reason: optionalString(2000),
+});
 
-export type LeaveListQuery = z.infer<typeof leaveListQuerySchema>;
-export type LeavePendingQuery = z.infer<typeof leavePendingQuerySchema>;
-export type LeaveHolidaysQuery = z.infer<typeof leaveHolidaysQuerySchema>;
+export const reviewLeaveRequestSchema = z.object({
+  reviewNotes: optionalString(2000),
+});
+
+export type CreateLeaveTypeInput = z.infer<typeof createLeaveTypeSchema>;
+export type UpdateLeaveTypeInput = z.infer<typeof updateLeaveTypeSchema>;
+export type UpdateLeavePolicyInput = z.infer<typeof updateLeavePolicySchema>;
+export type UpsertLeaveBalanceInput = z.infer<typeof upsertLeaveBalanceSchema>;
 export type CreateLeaveRequestInput = z.infer<typeof createLeaveRequestSchema>;
 export type UpdateLeaveRequestInput = z.infer<typeof updateLeaveRequestSchema>;
+export type ReviewLeaveRequestInput = z.infer<typeof reviewLeaveRequestSchema>;
+export type LeaveRequestStatusInput = z.infer<typeof leaveRequestStatus>;

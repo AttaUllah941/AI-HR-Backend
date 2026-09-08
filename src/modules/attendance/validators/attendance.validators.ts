@@ -1,51 +1,101 @@
 import { z } from 'zod';
 
-const blankToUndefined = (value: unknown) =>
-  value === '' || value === null || value === undefined ? undefined : value;
+const optionalString = (max: number) =>
+  z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().max(max).optional().nullable(),
+  );
 
-const attendanceStatusSchema = z.enum(['PRESENT', 'LATE', 'ABSENT', 'REMOTE', 'ON_LEAVE']);
+const optionalDate = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z.coerce.date().optional().nullable(),
+);
 
-export const attendanceDateQuerySchema = z.object({
-  date: z.preprocess(blankToUndefined, z.coerce.date().optional()),
+const requiredDate = z.coerce.date();
+
+const attendanceStatus = z.enum([
+  'PRESENT',
+  'ABSENT',
+  'LATE',
+  'HALF_DAY',
+  'ON_LEAVE',
+  'HOLIDAY',
+  'WEEKEND',
+  'REMOTE',
+  'EARLY_LEAVE',
+]);
+
+const attendanceSource = z.enum(['CLOCK', 'MANUAL', 'SYSTEM']);
+
+const timeOfDay = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Time must be HH:mm');
+
+export const createShiftSchema = z.object({
+  name: z.string().min(1).max(150),
+  code: z.string().min(1).max(50),
+  startTime: timeOfDay,
+  endTime: timeOfDay,
+  breakMinutes: z.number().int().min(0).max(480).optional(),
+  graceMinutes: z.number().int().min(0).max(180).optional(),
+  isDefault: z.boolean().optional(),
+  isActive: z.boolean().optional(),
 });
 
-export const attendanceListQuerySchema = z.object({
-  date: z.preprocess(blankToUndefined, z.coerce.date().optional()),
-  status: attendanceStatusSchema.optional(),
-  search: z.string().trim().max(120).optional(),
-  page: z.coerce.number().int().positive().default(1),
-  pageSize: z.coerce.number().int().positive().max(100).default(20),
+export const updateShiftSchema = createShiftSchema.partial();
+
+export const createHolidaySchema = z.object({
+  name: z.string().min(1).max(200),
+  date: requiredDate,
+  isOptional: z.boolean().optional(),
+  description: optionalString(1000),
 });
 
-export const attendanceCalendarQuerySchema = z.object({
-  year: z.coerce.number().int().min(2000).max(2100),
-  month: z.coerce.number().int().min(1).max(12),
-});
-
-export const attendanceCheckInsQuerySchema = z.object({
-  date: z.preprocess(blankToUndefined, z.coerce.date().optional()),
-  limit: z.coerce.number().int().positive().max(50).default(10),
-});
+export const updateHolidaySchema = createHolidaySchema.partial();
 
 export const createAttendanceSchema = z.object({
   employeeId: z.string().min(1),
-  workDate: z.coerce.date(),
-  status: attendanceStatusSchema.default('PRESENT'),
-  checkInAt: z.preprocess(blankToUndefined, z.coerce.date().optional().nullable()),
-  checkOutAt: z.preprocess(blankToUndefined, z.coerce.date().optional().nullable()),
-  locationLabel: z.preprocess(blankToUndefined, z.string().trim().max(200).optional()),
-  notes: z.preprocess(blankToUndefined, z.string().trim().max(500).optional()),
+  date: requiredDate,
+  shiftId: optionalString(50),
+  checkInAt: optionalDate,
+  checkOutAt: optionalDate,
+  status: attendanceStatus.optional(),
+  workMinutes: z.number().int().min(0).max(24 * 60).optional(),
+  overtimeMinutes: z.number().int().min(0).max(24 * 60).optional(),
+  lateMinutes: z.number().int().min(0).max(24 * 60).optional(),
+  notes: optionalString(2000),
+  source: attendanceSource.optional(),
 });
 
 export const updateAttendanceSchema = createAttendanceSchema
-  .omit({ employeeId: true, workDate: true })
+  .omit({ employeeId: true })
   .partial()
   .extend({
-    status: attendanceStatusSchema.optional(),
+    employeeId: z.string().min(1).optional(),
   });
 
-export type AttendanceListQuery = z.infer<typeof attendanceListQuerySchema>;
-export type AttendanceCalendarQuery = z.infer<typeof attendanceCalendarQuerySchema>;
-export type AttendanceCheckInsQuery = z.infer<typeof attendanceCheckInsQuerySchema>;
+export const clockActionSchema = z.object({
+  notes: optionalString(2000),
+});
+
+export const createOvertimeSchema = z.object({
+  employeeId: z.string().min(1),
+  attendanceId: optionalString(50),
+  date: requiredDate,
+  minutes: z.number().int().min(1).max(24 * 60),
+  reason: optionalString(2000),
+});
+
+export const reviewOvertimeSchema = z.object({
+  reviewNotes: optionalString(2000),
+});
+
+export type CreateShiftInput = z.infer<typeof createShiftSchema>;
+export type UpdateShiftInput = z.infer<typeof updateShiftSchema>;
+export type CreateHolidayInput = z.infer<typeof createHolidaySchema>;
+export type UpdateHolidayInput = z.infer<typeof updateHolidaySchema>;
 export type CreateAttendanceInput = z.infer<typeof createAttendanceSchema>;
 export type UpdateAttendanceInput = z.infer<typeof updateAttendanceSchema>;
+export type ClockActionInput = z.infer<typeof clockActionSchema>;
+export type CreateOvertimeInput = z.infer<typeof createOvertimeSchema>;
+export type ReviewOvertimeInput = z.infer<typeof reviewOvertimeSchema>;

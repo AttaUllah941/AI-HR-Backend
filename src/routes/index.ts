@@ -1,6 +1,8 @@
 import { Router } from 'express';
+import { aiRouter } from '../modules/ai/ai.routes.js';
 import { attendanceRouter } from '../modules/attendance/attendance.routes.js';
 import { authRouter } from '../modules/auth/auth.routes.js';
+import { dashboardRouter } from '../modules/dashboard/dashboard.routes.js';
 import { employeesRouter } from '../modules/employees/employees.routes.js';
 import { healthRouter } from '../modules/health/health.routes.js';
 import { leaveRouter } from '../modules/leave/leave.routes.js';
@@ -8,11 +10,19 @@ import { organizationRouter } from '../modules/organization/organization.routes.
 import { payrollRouter } from '../modules/payroll/payroll.routes.js';
 import { performanceRouter } from '../modules/performance/performance.routes.js';
 import { recruitmentRouter } from '../modules/recruitment/recruitment.routes.js';
+import { reportsRouter } from '../modules/reports/reports.routes.js';
+import { notificationsRouter } from '../modules/notifications/notifications.routes.js';
+import { profileRouter } from '../modules/profile/profile.routes.js';
+import { settingsRouter } from '../modules/settings/settings.routes.js';
+import { filesRouter } from '../modules/files/files.routes.js';
+import { globalRouter } from '../modules/global/global.routes.js';
+import { securityRouter } from '../modules/security/security.routes.js';
 
 export const apiRouter = Router();
 
 apiRouter.use('/health', healthRouter);
 apiRouter.use('/auth', authRouter);
+apiRouter.use('/dashboard', dashboardRouter);
 apiRouter.use('/organization', organizationRouter);
 apiRouter.use('/employees', employeesRouter);
 apiRouter.use('/attendance', attendanceRouter);
@@ -20,3 +30,11 @@ apiRouter.use('/leave', leaveRouter);
 apiRouter.use('/payroll', payrollRouter);
 apiRouter.use('/recruitment', recruitmentRouter);
 apiRouter.use('/performance', performanceRouter);
+apiRouter.use('/ai', aiRouter);
+apiRouter.use('/reports', reportsRouter);
+apiRouter.use('/notifications', notificationsRouter);
+apiRouter.use('/profile', profileRouter);
+apiRouter.use('/settings', settingsRouter);
+apiRouter.use('/files', filesRouter);
+apiRouter.use('/global', globalRouter);
+apiRouter.use('/security', securityRouter);

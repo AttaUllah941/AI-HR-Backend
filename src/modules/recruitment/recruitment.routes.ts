@@ -2,7 +2,23 @@ import { Router } from 'express';
 import { asyncHandler } from '../../middleware/async-handler.js';
 import { authMiddleware } from '../../middleware/auth.middleware.js';
 import { requirePermissions } from '../../middleware/rbac.middleware.js';
+import { validateBody } from '../../middleware/validate.middleware.js';
 import { RecruitmentController } from './controllers/recruitment.controller.js';
+import {
+  attachResumeSchema,
+  completeInterviewSchema,
+  createApplicationSchema,
+  createCandidateSchema,
+  createInterviewSchema,
+  createJobOpeningSchema,
+  createOfferSchema,
+  respondOfferSchema,
+  updateApplicationStatusSchema,
+  updateCandidateSchema,
+  updateInterviewSchema,
+  updateJobOpeningSchema,
+  updateOfferSchema,
+} from './validators/recruitment.validators.js';
 
 const controller = new RecruitmentController();
 
@@ -15,17 +31,15 @@ recruitmentRouter.get(
   requirePermissions('recruitment:view'),
   asyncHandler(controller.summary),
 );
-
 recruitmentRouter.get(
   '/pipeline',
   requirePermissions('recruitment:view'),
   asyncHandler(controller.pipeline),
 );
-
-recruitmentRouter.post(
-  '/ai-screen',
-  requirePermissions('recruitment:update'),
-  asyncHandler(controller.aiScreen),
+recruitmentRouter.get(
+  '/report',
+  requirePermissions('recruitment:view'),
+  asyncHandler(controller.report),
 );
 
 recruitmentRouter.get(
@@ -33,23 +47,42 @@ recruitmentRouter.get(
   requirePermissions('recruitment:view'),
   asyncHandler(controller.listJobs),
 );
-
 recruitmentRouter.post(
   '/jobs',
   requirePermissions('recruitment:create'),
+  validateBody(createJobOpeningSchema),
   asyncHandler(controller.createJob),
 );
-
+recruitmentRouter.get(
+  '/jobs/:id',
+  requirePermissions('recruitment:view'),
+  asyncHandler(controller.getJob),
+);
 recruitmentRouter.patch(
   '/jobs/:id',
   requirePermissions('recruitment:update'),
+  validateBody(updateJobOpeningSchema),
   asyncHandler(controller.updateJob),
 );
-
 recruitmentRouter.delete(
   '/jobs/:id',
   requirePermissions('recruitment:delete'),
-  asyncHandler(controller.removeJob),
+  asyncHandler(controller.deleteJob),
+);
+recruitmentRouter.post(
+  '/jobs/:id/publish',
+  requirePermissions('recruitment:update'),
+  asyncHandler(controller.publishJob),
+);
+recruitmentRouter.post(
+  '/jobs/:id/close',
+  requirePermissions('recruitment:update'),
+  asyncHandler(controller.closeJob),
+);
+recruitmentRouter.post(
+  '/jobs/:id/hold',
+  requirePermissions('recruitment:update'),
+  asyncHandler(controller.holdJob),
 );
 
 recruitmentRouter.get(
@@ -57,21 +90,134 @@ recruitmentRouter.get(
   requirePermissions('recruitment:view'),
   asyncHandler(controller.listCandidates),
 );
-
 recruitmentRouter.post(
   '/candidates',
   requirePermissions('recruitment:create'),
+  validateBody(createCandidateSchema),
   asyncHandler(controller.createCandidate),
 );
-
+recruitmentRouter.get(
+  '/candidates/:id',
+  requirePermissions('recruitment:view'),
+  asyncHandler(controller.getCandidate),
+);
 recruitmentRouter.patch(
   '/candidates/:id',
   requirePermissions('recruitment:update'),
+  validateBody(updateCandidateSchema),
   asyncHandler(controller.updateCandidate),
 );
-
 recruitmentRouter.delete(
   '/candidates/:id',
   requirePermissions('recruitment:delete'),
-  asyncHandler(controller.removeCandidate),
+  asyncHandler(controller.deleteCandidate),
+);
+recruitmentRouter.post(
+  '/candidates/:id/resume',
+  requirePermissions('recruitment:update'),
+  validateBody(attachResumeSchema),
+  asyncHandler(controller.attachResume),
+);
+recruitmentRouter.post(
+  '/candidates/:id/screening',
+  requirePermissions('recruitment:update'),
+  validateBody(updateCandidateSchema.pick({ screeningScore: true, screeningNotes: true })),
+  asyncHandler(controller.updateScreening),
+);
+
+recruitmentRouter.get(
+  '/applications',
+  requirePermissions('recruitment:view'),
+  asyncHandler(controller.listApplications),
+);
+recruitmentRouter.post(
+  '/applications',
+  requirePermissions('recruitment:create'),
+  validateBody(createApplicationSchema),
+  asyncHandler(controller.createApplication),
+);
+recruitmentRouter.get(
+  '/applications/:id',
+  requirePermissions('recruitment:view'),
+  asyncHandler(controller.getApplication),
+);
+recruitmentRouter.patch(
+  '/applications/:id/status',
+  requirePermissions('recruitment:update'),
+  validateBody(updateApplicationStatusSchema),
+  asyncHandler(controller.updateApplicationStatus),
+);
+recruitmentRouter.post(
+  '/applications/:id/reject',
+  requirePermissions('recruitment:update'),
+  validateBody(updateApplicationStatusSchema.pick({ rejectionReason: true })),
+  asyncHandler(controller.rejectApplication),
+);
+
+recruitmentRouter.get(
+  '/interviews',
+  requirePermissions('recruitment:view'),
+  asyncHandler(controller.listInterviews),
+);
+recruitmentRouter.post(
+  '/interviews',
+  requirePermissions('recruitment:create'),
+  validateBody(createInterviewSchema),
+  asyncHandler(controller.createInterview),
+);
+recruitmentRouter.get(
+  '/interviews/:id',
+  requirePermissions('recruitment:view'),
+  asyncHandler(controller.getInterview),
+);
+recruitmentRouter.patch(
+  '/interviews/:id',
+  requirePermissions('recruitment:update'),
+  validateBody(updateInterviewSchema),
+  asyncHandler(controller.updateInterview),
+);
+recruitmentRouter.delete(
+  '/interviews/:id',
+  requirePermissions('recruitment:delete'),
+  asyncHandler(controller.deleteInterview),
+);
+recruitmentRouter.post(
+  '/interviews/:id/complete',
+  requirePermissions('recruitment:update'),
+  validateBody(completeInterviewSchema),
+  asyncHandler(controller.completeInterview),
+);
+
+recruitmentRouter.get(
+  '/offers',
+  requirePermissions('recruitment:view'),
+  asyncHandler(controller.listOffers),
+);
+recruitmentRouter.post(
+  '/offers',
+  requirePermissions('recruitment:create'),
+  validateBody(createOfferSchema),
+  asyncHandler(controller.createOffer),
+);
+recruitmentRouter.get(
+  '/offers/:id',
+  requirePermissions('recruitment:view'),
+  asyncHandler(controller.getOffer),
+);
+recruitmentRouter.patch(
+  '/offers/:id',
+  requirePermissions('recruitment:update'),
+  validateBody(updateOfferSchema),
+  asyncHandler(controller.updateOffer),
+);
+recruitmentRouter.post(
+  '/offers/:id/send',
+  requirePermissions('recruitment:update'),
+  asyncHandler(controller.sendOffer),
+);
+recruitmentRouter.post(
+  '/offers/:id/respond',
+  requirePermissions('recruitment:approve'),
+  validateBody(respondOfferSchema),
+  asyncHandler(controller.respondOffer),
 );

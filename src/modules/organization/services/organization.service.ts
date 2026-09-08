@@ -6,72 +6,26 @@ import {
 } from '../../../utils/app-error.js';
 import { OrganizationRepository } from '../repositories/organization.repository.js';
 import type {
+  CreateBranchInput,
   CreateDepartmentInput,
-  CreateLocationInput,
-  ListQueryInput,
-  UpdateCompanyInput,
+  CreateDesignationInput,
+  CreateTeamInput,
+  UpdateBranchInput,
   UpdateDepartmentInput,
-  UpdateLocationInput,
+  UpdateDesignationInput,
+  UpdateTeamInput,
 } from '../validators/organization.validators.js';
 
-function toCompanyDto(company: NonNullable<Awaited<ReturnType<OrganizationRepository['findCompanyById']>>>) {
-  return {
-    id: company.id,
-    name: company.name,
-    legalName: company.legalName,
-    email: company.email,
-    phone: company.phone,
-    website: company.website,
-    logoUrl: company.logoUrl,
-    addressLine1: company.addressLine1,
-    addressLine2: company.addressLine2,
-    city: company.city,
-    state: company.state,
-    country: company.country,
-    postalCode: company.postalCode,
-    timezone: company.timezone,
-    locale: company.locale,
-    isActive: company.isActive,
-    updatedAt: company.updatedAt,
-  };
-}
+type AuthActor = { id: string; permissions: string[] };
 
-function toDepartmentDto(
-  department: NonNullable<Awaited<ReturnType<OrganizationRepository['findDepartment']>>>,
-) {
-  return {
-    id: department.id,
-    companyId: department.companyId,
-    name: department.name,
-    code: department.code,
-    description: department.description,
-    parentId: department.parentId,
-    isActive: department.isActive,
-    createdAt: department.createdAt,
-    updatedAt: department.updatedAt,
-  };
-}
-
-function toLocationDto(
-  location: NonNullable<Awaited<ReturnType<OrganizationRepository['findLocation']>>>,
-) {
-  return {
-    id: location.id,
-    companyId: location.companyId,
-    name: location.name,
-    code: location.code,
-    addressLine1: location.addressLine1,
-    city: location.city,
-    state: location.state,
-    country: location.country,
-    postalCode: location.postalCode,
-    timezone: location.timezone,
-    isHeadquarters: location.isHeadquarters,
-    isActive: location.isActive,
-    createdAt: location.createdAt,
-    updatedAt: location.updatedAt,
-  };
-}
+export type OrgChartNode = {
+  id: string;
+  name: string;
+  code: string;
+  branch: { id: string; name: string; code: string } | null;
+  teams: Array<{ id: string; name: string; code: string }>;
+  children: OrgChartNode[];
+};
 
 export class OrganizationService {
   constructor(private readonly repo = new OrganizationRepository()) {}
@@ -79,276 +33,386 @@ export class OrganizationService {
   private async requireCompanyId(userId: string): Promise<string> {
     const user = await this.repo.findUserCompanyId(userId);
     if (!user?.companyId) {
-      throw new ForbiddenError('User is not assigned to a company');
+      throw new ForbiddenError('Your account is not linked to a company');
     }
     return user.companyId;
   }
 
-  async getOverview(userId: string) {
-    const companyId = await this.requireCompanyId(userId);
-    const company = await this.repo.findCompanyById(companyId);
+  async getOverview(actor: AuthActor) {
+    const companyId = await this.requireCompanyId(actor.id);
+    const company = await this.repo.findCompany(companyId);
     if (!company) {
       throw new NotFoundError('Company not found');
     }
 
-    const [departmentCount, locationCount] = await this.repo.countOrgSummary(companyId);
+    const [branches, departments, teams, designations] = await Promise.all([
+      this.repo.countBranches(companyId),
+      this.repo.countDepartments(companyId),
+      this.repo.countTeams(companyId),
+      this.repo.countDesignations(companyId),
+    ]);
 
     return {
-      company: toCompanyDto(company),
-      stats: {
-        departments: departmentCount,
-        locations: locationCount,
-      },
+      company,
+      counts: { branches, departments, teams, designations },
     };
   }
 
-  async getCompany(userId: string) {
-    const companyId = await this.requireCompanyId(userId);
-    const company = await this.repo.findCompanyById(companyId);
-    if (!company) {
-      throw new NotFoundError('Company not found');
+  async getOrgChart(actor: AuthActor) {
+    const companyId = await this.requireCompanyId(actor.id);
+    const company = await this.repo.findCompany(companyId);
+    const departments = await this.repo.chartDepartments(companyId);
+
+    const byId = new Map<string, OrgChartNode>();
+    for (const dept of departments) {
+      byId.set(dept.id, {
+        id: dept.id,
+        name: dept.name,
+        code: dept.code,
+        branch: dept.branch,
+        teams: dept.teams,
+        children: [],
+      });
     }
-    return toCompanyDto(company);
-  }
 
-  async updateCompany(userId: string, input: UpdateCompanyInput) {
-    const companyId = await this.requireCompanyId(userId);
-    const existing = await this.repo.findCompanyById(companyId);
-    if (!existing) {
-      throw new NotFoundError('Company not found');
-    }
-
-    const company = await this.repo.updateCompany(companyId, input);
-    await this.repo.createAuditLog({
-      actorId: userId,
-      action: 'organization.company.update',
-      entityType: 'Company',
-      entityId: company.id,
-    });
-
-    return toCompanyDto(company);
-  }
-
-  async listDepartments(userId: string, query: ListQueryInput) {
-    const companyId = await this.requireCompanyId(userId);
-    const skip = (query.page - 1) * query.pageSize;
-    const [items, total] = await this.repo.listDepartments(
-      companyId,
-      query.search,
-      skip,
-      query.pageSize,
-    );
-
-    return {
-      items: items.map(toDepartmentDto),
-      total,
-      page: query.page,
-      pageSize: query.pageSize,
-      totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
-    };
-  }
-
-  async createDepartment(userId: string, input: CreateDepartmentInput) {
-    const companyId = await this.requireCompanyId(userId);
-
-    if (input.parentId) {
-      const parent = await this.repo.findDepartment(companyId, input.parentId);
-      if (!parent) {
-        throw new ValidationError('Parent department not found');
+    const roots: OrgChartNode[] = [];
+    for (const dept of departments) {
+      const node = byId.get(dept.id)!;
+      if (dept.parentId && byId.has(dept.parentId)) {
+        byId.get(dept.parentId)!.children.push(node);
+      } else {
+        roots.push(node);
       }
     }
 
-    try {
-      const department = await this.repo.createDepartment({
-        name: input.name,
-        code: input.code,
-        description: input.description,
-        isActive: input.isActive ?? true,
-        company: { connect: { id: companyId } },
-        ...(input.parentId ? { parent: { connect: { id: input.parentId } } } : {}),
-      });
+    return {
+      company,
+      tree: roots,
+    };
+  }
 
+  // —— Branches ——
+  async listBranches(actor: AuthActor) {
+    const companyId = await this.requireCompanyId(actor.id);
+    return { items: await this.repo.listBranches(companyId) };
+  }
+
+  async createBranch(actor: AuthActor, input: CreateBranchInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    try {
+      const branch = await this.repo.createBranch(companyId, input);
       await this.repo.createAuditLog({
-        actorId: userId,
+        actorId: actor.id,
+        action: 'organization.branch.create',
+        entityType: 'Branch',
+        entityId: branch.id,
+      });
+      return branch;
+    } catch (error) {
+      this.rethrowUnique(error, 'Branch code already exists');
+    }
+  }
+
+  async updateBranch(actor: AuthActor, id: string, input: UpdateBranchInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    const existing = await this.repo.findBranch(companyId, id);
+    if (!existing) {
+      throw new NotFoundError('Branch not found');
+    }
+    if (input.isHeadOffice) {
+      await this.repo.clearOtherHeadOffices(companyId, id);
+    }
+    try {
+      const branch = await this.repo.updateBranch(id, input);
+      await this.repo.createAuditLog({
+        actorId: actor.id,
+        action: 'organization.branch.update',
+        entityType: 'Branch',
+        entityId: branch.id,
+      });
+      return branch;
+    } catch (error) {
+      this.rethrowUnique(error, 'Branch code already exists');
+    }
+  }
+
+  async deleteBranch(actor: AuthActor, id: string) {
+    const companyId = await this.requireCompanyId(actor.id);
+    const existing = await this.repo.findBranch(companyId, id);
+    if (!existing) {
+      throw new NotFoundError('Branch not found');
+    }
+    const departmentCount = await this.repo.countDepartmentsForBranch(companyId, id);
+    if (departmentCount > 0) {
+      throw new ValidationError(
+        'Cannot delete a branch that still has departments. Reassign or remove them first.',
+      );
+    }
+    await this.repo.softDeleteBranch(id);
+    await this.repo.createAuditLog({
+      actorId: actor.id,
+      action: 'organization.branch.delete',
+      entityType: 'Branch',
+      entityId: id,
+    });
+    return { deleted: true };
+  }
+
+  // —— Departments ——
+  async listDepartments(actor: AuthActor) {
+    const companyId = await this.requireCompanyId(actor.id);
+    const items = await this.repo.listDepartments(companyId);
+    return {
+      items: items.map(({ _count, ...item }) => ({
+        ...item,
+        teamCount: _count.teams,
+      })),
+    };
+  }
+
+  async createDepartment(actor: AuthActor, input: CreateDepartmentInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.assertDepartmentRefs(companyId, input.branchId, input.parentId);
+    try {
+      const department = await this.repo.createDepartment(companyId, input);
+      await this.repo.createAuditLog({
+        actorId: actor.id,
         action: 'organization.department.create',
         entityType: 'Department',
         entityId: department.id,
       });
-
-      return toDepartmentDto(department);
+      return department;
     } catch (error) {
-      if ((error as { code?: string }).code === 'P2002') {
-        throw new ConflictError('A department with this name already exists');
-      }
-      throw error;
+      this.rethrowUnique(error, 'Department code already exists');
     }
   }
 
-  async updateDepartment(userId: string, id: string, input: UpdateDepartmentInput) {
-    const companyId = await this.requireCompanyId(userId);
+  async updateDepartment(actor: AuthActor, id: string, input: UpdateDepartmentInput) {
+    const companyId = await this.requireCompanyId(actor.id);
     const existing = await this.repo.findDepartment(companyId, id);
     if (!existing) {
       throw new NotFoundError('Department not found');
     }
-
     if (input.parentId === id) {
       throw new ValidationError('A department cannot be its own parent');
     }
-
     if (input.parentId) {
-      const parent = await this.repo.findDepartment(companyId, input.parentId);
-      if (!parent) {
-        throw new ValidationError('Parent department not found');
-      }
+      await this.assertNoDepartmentCycle(companyId, id, input.parentId);
     }
-
+    await this.assertDepartmentRefs(companyId, input.branchId, input.parentId);
     try {
-      const department = await this.repo.updateDepartment(id, {
-        name: input.name,
-        code: input.code,
-        description: input.description,
-        isActive: input.isActive,
-        ...(input.parentId === null
-          ? { parent: { disconnect: true } }
-          : input.parentId
-            ? { parent: { connect: { id: input.parentId } } }
-            : {}),
-      });
-
+      const department = await this.repo.updateDepartment(id, input);
       await this.repo.createAuditLog({
-        actorId: userId,
+        actorId: actor.id,
         action: 'organization.department.update',
         entityType: 'Department',
         entityId: department.id,
       });
-
-      return toDepartmentDto(department);
+      return department;
     } catch (error) {
-      if ((error as { code?: string }).code === 'P2002') {
-        throw new ConflictError('A department with this name already exists');
-      }
-      throw error;
+      this.rethrowUnique(error, 'Department code already exists');
     }
   }
 
-  async deleteDepartment(userId: string, id: string) {
-    const companyId = await this.requireCompanyId(userId);
+  async deleteDepartment(actor: AuthActor, id: string) {
+    const companyId = await this.requireCompanyId(actor.id);
     const existing = await this.repo.findDepartment(companyId, id);
     if (!existing) {
       throw new NotFoundError('Department not found');
     }
-
+    const [childCount, teamCount] = await Promise.all([
+      this.repo.countChildDepartments(companyId, id),
+      this.repo.countTeamsForDepartment(companyId, id),
+    ]);
+    if (childCount > 0) {
+      throw new ValidationError(
+        'Cannot delete a department that has child departments. Remove or reassign them first.',
+      );
+    }
+    if (teamCount > 0) {
+      throw new ValidationError(
+        'Cannot delete a department that still has teams. Remove or reassign them first.',
+      );
+    }
     await this.repo.softDeleteDepartment(id);
     await this.repo.createAuditLog({
-      actorId: userId,
+      actorId: actor.id,
       action: 'organization.department.delete',
       entityType: 'Department',
       entityId: id,
     });
-
     return { deleted: true };
   }
 
-  async listLocations(userId: string, query: ListQueryInput) {
-    const companyId = await this.requireCompanyId(userId);
-    const skip = (query.page - 1) * query.pageSize;
-    const [items, total] = await this.repo.listLocations(
-      companyId,
-      query.search,
-      skip,
-      query.pageSize,
-    );
-
-    return {
-      items: items.map(toLocationDto),
-      total,
-      page: query.page,
-      pageSize: query.pageSize,
-      totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
-    };
+  // —— Teams ——
+  async listTeams(actor: AuthActor) {
+    const companyId = await this.requireCompanyId(actor.id);
+    return { items: await this.repo.listTeams(companyId) };
   }
 
-  async createLocation(userId: string, input: CreateLocationInput) {
-    const companyId = await this.requireCompanyId(userId);
-
-    if (input.isHeadquarters) {
-      await this.repo.clearHeadquarters(companyId);
+  async createTeam(actor: AuthActor, input: CreateTeamInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    const department = await this.repo.findDepartment(companyId, input.departmentId);
+    if (!department) {
+      throw new ValidationError('Department not found');
     }
-
     try {
-      const location = await this.repo.createLocation({
-        name: input.name,
-        code: input.code,
-        addressLine1: input.addressLine1,
-        city: input.city,
-        state: input.state,
-        country: input.country,
-        postalCode: input.postalCode,
-        timezone: input.timezone,
-        isHeadquarters: input.isHeadquarters ?? false,
-        isActive: input.isActive ?? true,
-        company: { connect: { id: companyId } },
-      });
-
+      const team = await this.repo.createTeam(companyId, input);
       await this.repo.createAuditLog({
-        actorId: userId,
-        action: 'organization.location.create',
-        entityType: 'Location',
-        entityId: location.id,
+        actorId: actor.id,
+        action: 'organization.team.create',
+        entityType: 'Team',
+        entityId: team.id,
       });
-
-      return toLocationDto(location);
+      return team;
     } catch (error) {
-      if ((error as { code?: string }).code === 'P2002') {
-        throw new ConflictError('A location with this name already exists');
-      }
-      throw error;
+      this.rethrowUnique(error, 'Team code already exists');
     }
   }
 
-  async updateLocation(userId: string, id: string, input: UpdateLocationInput) {
-    const companyId = await this.requireCompanyId(userId);
-    const existing = await this.repo.findLocation(companyId, id);
+  async updateTeam(actor: AuthActor, id: string, input: UpdateTeamInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    const existing = await this.repo.findTeam(companyId, id);
     if (!existing) {
-      throw new NotFoundError('Location not found');
+      throw new NotFoundError('Team not found');
     }
-
-    if (input.isHeadquarters) {
-      await this.repo.clearHeadquarters(companyId, id);
+    if (input.departmentId) {
+      const department = await this.repo.findDepartment(companyId, input.departmentId);
+      if (!department) {
+        throw new ValidationError('Department not found');
+      }
     }
-
     try {
-      const location = await this.repo.updateLocation(id, input);
+      const team = await this.repo.updateTeam(id, input);
       await this.repo.createAuditLog({
-        actorId: userId,
-        action: 'organization.location.update',
-        entityType: 'Location',
-        entityId: location.id,
+        actorId: actor.id,
+        action: 'organization.team.update',
+        entityType: 'Team',
+        entityId: team.id,
       });
-      return toLocationDto(location);
+      return team;
     } catch (error) {
-      if ((error as { code?: string }).code === 'P2002') {
-        throw new ConflictError('A location with this name already exists');
-      }
-      throw error;
+      this.rethrowUnique(error, 'Team code already exists');
     }
   }
 
-  async deleteLocation(userId: string, id: string) {
-    const companyId = await this.requireCompanyId(userId);
-    const existing = await this.repo.findLocation(companyId, id);
+  async deleteTeam(actor: AuthActor, id: string) {
+    const companyId = await this.requireCompanyId(actor.id);
+    const existing = await this.repo.findTeam(companyId, id);
     if (!existing) {
-      throw new NotFoundError('Location not found');
+      throw new NotFoundError('Team not found');
     }
-
-    await this.repo.softDeleteLocation(id);
+    await this.repo.softDeleteTeam(id);
     await this.repo.createAuditLog({
-      actorId: userId,
-      action: 'organization.location.delete',
-      entityType: 'Location',
+      actorId: actor.id,
+      action: 'organization.team.delete',
+      entityType: 'Team',
       entityId: id,
     });
-
     return { deleted: true };
+  }
+
+  // —— Designations ——
+  async listDesignations(actor: AuthActor) {
+    const companyId = await this.requireCompanyId(actor.id);
+    return { items: await this.repo.listDesignations(companyId) };
+  }
+
+  async createDesignation(actor: AuthActor, input: CreateDesignationInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    try {
+      const designation = await this.repo.createDesignation(companyId, input);
+      await this.repo.createAuditLog({
+        actorId: actor.id,
+        action: 'organization.designation.create',
+        entityType: 'Designation',
+        entityId: designation.id,
+      });
+      return designation;
+    } catch (error) {
+      this.rethrowUnique(error, 'Designation code already exists');
+    }
+  }
+
+  async updateDesignation(actor: AuthActor, id: string, input: UpdateDesignationInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    const existing = await this.repo.findDesignation(companyId, id);
+    if (!existing) {
+      throw new NotFoundError('Designation not found');
+    }
+    try {
+      const designation = await this.repo.updateDesignation(id, input);
+      await this.repo.createAuditLog({
+        actorId: actor.id,
+        action: 'organization.designation.update',
+        entityType: 'Designation',
+        entityId: designation.id,
+      });
+      return designation;
+    } catch (error) {
+      this.rethrowUnique(error, 'Designation code already exists');
+    }
+  }
+
+  async deleteDesignation(actor: AuthActor, id: string) {
+    const companyId = await this.requireCompanyId(actor.id);
+    const existing = await this.repo.findDesignation(companyId, id);
+    if (!existing) {
+      throw new NotFoundError('Designation not found');
+    }
+    await this.repo.softDeleteDesignation(id);
+    await this.repo.createAuditLog({
+      actorId: actor.id,
+      action: 'organization.designation.delete',
+      entityType: 'Designation',
+      entityId: id,
+    });
+    return { deleted: true };
+  }
+
+  private async assertNoDepartmentCycle(
+    companyId: string,
+    departmentId: string,
+    parentId: string,
+  ) {
+    let current: string | null = parentId;
+    while (current) {
+      if (current === departmentId) {
+        throw new ValidationError('Department hierarchy cannot contain a circular reference');
+      }
+      const row = await this.repo.getDepartmentParentId(companyId, current);
+      current = row?.parentId ?? null;
+    }
+  }
+
+  private async assertDepartmentRefs(
+    companyId: string,
+    branchId?: string | null,
+    parentId?: string | null,
+  ) {
+    if (branchId) {
+      const branch = await this.repo.findBranch(companyId, branchId);
+      if (!branch) {
+        throw new ValidationError('Branch not found');
+      }
+    }
+    if (parentId) {
+      const parent = await this.repo.findDepartment(companyId, parentId);
+      if (!parent) {
+        throw new ValidationError('Parent department not found');
+      }
+    }
+  }
+
+  private rethrowUnique(error: unknown, message: string): never {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: string }).code === 'P2002'
+    ) {
+      throw new ConflictError(message);
+    }
+    throw error;
   }
 }

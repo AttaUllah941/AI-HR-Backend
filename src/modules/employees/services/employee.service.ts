@@ -1,59 +1,42 @@
+import type { EmployeeStatus } from '@prisma/client';
 import {
   ConflictError,
   ForbiddenError,
   NotFoundError,
   ValidationError,
 } from '../../../utils/app-error.js';
-import {
-  EmployeeRepository,
-  type EmployeeWithRelations,
-} from '../repositories/employee.repository.js';
+import { EmployeeRepository, type EmployeeListQuery } from '../repositories/employee.repository.js';
 import type {
+  CreateCertificationInput,
+  CreateDocumentInput,
+  CreateEducationInput,
+  CreateEmergencyContactInput,
   CreateEmployeeInput,
-  EmployeeListQuery,
+  CreateExperienceInput,
+  CreateSkillInput,
+  UpdateCertificationInput,
+  UpdateDocumentInput,
+  UpdateEducationInput,
+  UpdateEmergencyContactInput,
   UpdateEmployeeInput,
+  UpdateExperienceInput,
+  UpdateSkillInput,
 } from '../validators/employee.validators.js';
 
-function managerLabel(manager: EmployeeWithRelations['manager']) {
-  if (!manager) {
-    return null;
-  }
-  return `${manager.firstName} ${manager.lastName.charAt(0)}.`;
-}
+type AuthActor = { id: string; permissions: string[] };
 
-function toEmployeeDto(employee: EmployeeWithRelations) {
-  return {
-    id: employee.id,
-    companyId: employee.companyId,
-    userId: employee.userId,
-    employeeNumber: employee.employeeNumber,
-    firstName: employee.firstName,
-    lastName: employee.lastName,
-    email: employee.email,
-    phone: employee.phone,
-    avatarUrl: employee.avatarUrl,
-    position: employee.position,
-    departmentId: employee.departmentId,
-    department: employee.department,
-    locationId: employee.locationId,
-    location: employee.location,
-    managerId: employee.managerId,
-    manager: employee.manager
-      ? {
-          id: employee.manager.id,
-          firstName: employee.manager.firstName,
-          lastName: employee.manager.lastName,
-          email: employee.manager.email,
-          displayName: managerLabel(employee.manager),
-        }
-      : null,
-    hireDate: employee.hireDate,
-    employmentType: employee.employmentType,
-    status: employee.status,
-    createdAt: employee.createdAt,
-    updatedAt: employee.updatedAt,
-  };
-}
+export type EmployeeListParams = {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  status?: string;
+  branchId?: string;
+  departmentId?: string;
+  teamId?: string;
+  designationId?: string;
+  sortBy?: string;
+  sortDir?: string;
+};
 
 export class EmployeeService {
   constructor(private readonly repo = new EmployeeRepository()) {}
@@ -61,236 +44,384 @@ export class EmployeeService {
   private async requireCompanyId(userId: string): Promise<string> {
     const user = await this.repo.findUserCompanyId(userId);
     if (!user?.companyId) {
-      throw new ForbiddenError('User is not assigned to a company');
+      throw new ForbiddenError('Your account is not linked to a company');
     }
     return user.companyId;
   }
 
-  private async assertRefs(
-    companyId: string,
-    input: { departmentId?: string | null; locationId?: string | null; managerId?: string | null },
-  ) {
-    if (input.departmentId) {
-      const department = await this.repo.findDepartment(companyId, input.departmentId);
-      if (!department) {
-        throw new ValidationError('Department not found');
-      }
-    }
-    if (input.locationId) {
-      const location = await this.repo.findLocation(companyId, input.locationId);
-      if (!location) {
-        throw new ValidationError('Location not found');
-      }
-    }
-    if (input.managerId) {
-      const manager = await this.repo.findEmployee(companyId, input.managerId);
-      if (!manager) {
-        throw new ValidationError('Manager not found');
-      }
-    }
-  }
-
-  async list(userId: string, query: EmployeeListQuery) {
-    const companyId = await this.requireCompanyId(userId);
-    const skip = (query.page - 1) * query.pageSize;
-    const [items, total] = await this.repo.list(companyId, {
-      search: query.search,
-      departmentId: query.departmentId,
-      status: query.status,
-      skip,
-      take: query.pageSize,
-      sort: query.sort,
-      order: query.order,
-    });
+  private parseListQuery(params: EmployeeListParams): EmployeeListQuery {
+    const page = Math.max(1, Number(params.page ?? 1) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number(params.pageSize ?? 20) || 20));
+    const sortBy = ['firstName', 'lastName', 'employeeCode', 'joinDate', 'createdAt'].includes(
+      params.sortBy ?? '',
+    )
+      ? (params.sortBy as EmployeeListQuery['sortBy'])
+      : 'lastName';
+    const sortDir = params.sortDir === 'desc' ? 'desc' : 'asc';
+    const status = params.status as EmployeeStatus | undefined;
 
     return {
-      items: items.map(toEmployeeDto),
-      total,
-      page: query.page,
-      pageSize: query.pageSize,
-      totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
+      page,
+      pageSize,
+      search: params.search?.trim() || undefined,
+      status: status && status.length > 0 ? status : undefined,
+      branchId: params.branchId || undefined,
+      departmentId: params.departmentId || undefined,
+      teamId: params.teamId || undefined,
+      designationId: params.designationId || undefined,
+      sortBy,
+      sortDir,
     };
   }
 
-  async getById(userId: string, id: string) {
-    const companyId = await this.requireCompanyId(userId);
-    const employee = await this.repo.findEmployee(companyId, id);
-    if (!employee) {
-      throw new NotFoundError('Employee not found');
+  private rethrowUnique(error: unknown, message: string): never {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code: string }).code === 'P2002'
+    ) {
+      throw new ConflictError(message);
     }
-    return toEmployeeDto(employee);
+    throw error;
   }
 
-  async create(userId: string, input: CreateEmployeeInput) {
-    const companyId = await this.requireCompanyId(userId);
-    await this.assertRefs(companyId, input);
-
-    const existing = await this.repo.findByEmail(companyId, input.email);
-    if (existing) {
-      throw new ConflictError('An employee with this email already exists');
+  private async validateOrgRefs(companyId: string, input: CreateEmployeeInput | UpdateEmployeeInput) {
+    if (input.branchId) {
+      const branch = await this.repo.findBranch(companyId, input.branchId);
+      if (!branch) throw new ValidationError('Invalid branch');
     }
-
-    if (input.managerId === undefined) {
-      // no-op
+    if (input.departmentId) {
+      const dept = await this.repo.findDepartment(companyId, input.departmentId);
+      if (!dept) throw new ValidationError('Invalid department');
     }
+    if (input.teamId) {
+      const team = await this.repo.findTeam(companyId, input.teamId);
+      if (!team) throw new ValidationError('Invalid team');
+    }
+    if (input.designationId) {
+      const designation = await this.repo.findDesignation(companyId, input.designationId);
+      if (!designation) throw new ValidationError('Invalid designation');
+    }
+    if (input.managerId) {
+      const manager = await this.repo.findEmployeeBasic(companyId, input.managerId);
+      if (!manager) throw new ValidationError('Invalid manager');
+    }
+  }
 
+  private async requireEmployee(companyId: string, id: string) {
+    const employee = await this.repo.findEmployeeBasic(companyId, id);
+    if (!employee) throw new NotFoundError('Employee not found');
+    return employee;
+  }
+
+  async list(actor: AuthActor, params: EmployeeListParams) {
+    const companyId = await this.requireCompanyId(actor.id);
+    const query = this.parseListQuery(params);
+    const [items, total] = await this.repo.listEmployees(companyId, query);
+    return {
+      items,
+      pagination: {
+        page: query.page,
+        pageSize: query.pageSize,
+        total,
+        totalPages: Math.ceil(total / query.pageSize),
+      },
+    };
+  }
+
+  async getById(actor: AuthActor, id: string) {
+    const companyId = await this.requireCompanyId(actor.id);
+    const employee = await this.repo.findEmployee(companyId, id);
+    if (!employee) throw new NotFoundError('Employee not found');
+    return employee;
+  }
+
+  async create(actor: AuthActor, input: CreateEmployeeInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.validateOrgRefs(companyId, input);
     try {
-      const employee = await this.repo.create({
-        firstName: input.firstName,
-        lastName: input.lastName,
-        email: input.email,
-        phone: input.phone,
-        employeeNumber: input.employeeNumber,
-        position: input.position,
-        hireDate: input.hireDate ?? undefined,
-        employmentType: input.employmentType ?? 'FULL_TIME',
-        status: input.status ?? 'ACTIVE',
-        avatarUrl: input.avatarUrl,
-        company: { connect: { id: companyId } },
-        ...(input.departmentId ? { department: { connect: { id: input.departmentId } } } : {}),
-        ...(input.locationId ? { location: { connect: { id: input.locationId } } } : {}),
-        ...(input.managerId ? { manager: { connect: { id: input.managerId } } } : {}),
-      });
-
+      const employee = await this.repo.createEmployee(companyId, input);
       await this.repo.createAuditLog({
-        actorId: userId,
+        actorId: actor.id,
         action: 'employees.create',
         entityType: 'Employee',
         entityId: employee.id,
+        metadata: { employeeCode: employee.employeeCode },
       });
-
-      return toEmployeeDto(employee);
+      return employee;
     } catch (error) {
-      if ((error as { code?: string }).code === 'P2002') {
-        throw new ConflictError('An employee with this email already exists');
-      }
-      throw error;
+      this.rethrowUnique(error, 'Employee code or email already exists');
     }
   }
 
-  async update(userId: string, id: string, input: UpdateEmployeeInput) {
-    const companyId = await this.requireCompanyId(userId);
-    const existing = await this.repo.findEmployee(companyId, id);
-    if (!existing) {
-      throw new NotFoundError('Employee not found');
-    }
-
-    await this.assertRefs(companyId, input);
-
+  async update(actor: AuthActor, id: string, input: UpdateEmployeeInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, id);
     if (input.managerId === id) {
-      throw new ValidationError('An employee cannot be their own manager');
+      throw new ValidationError('Employee cannot be their own manager');
     }
-
-    if (input.email && input.email !== existing.email) {
-      const clash = await this.repo.findByEmail(companyId, input.email);
-      if (clash) {
-        throw new ConflictError('An employee with this email already exists');
-      }
-    }
-
+    await this.validateOrgRefs(companyId, input);
     try {
-      const employee = await this.repo.update(id, {
-        firstName: input.firstName,
-        lastName: input.lastName,
-        email: input.email,
-        phone: input.phone,
-        employeeNumber: input.employeeNumber,
-        position: input.position,
-        hireDate: input.hireDate === null ? null : input.hireDate,
-        employmentType: input.employmentType,
-        status: input.status,
-        avatarUrl: input.avatarUrl,
-        ...(input.departmentId === null
-          ? { department: { disconnect: true } }
-          : input.departmentId
-            ? { department: { connect: { id: input.departmentId } } }
-            : {}),
-        ...(input.locationId === null
-          ? { location: { disconnect: true } }
-          : input.locationId
-            ? { location: { connect: { id: input.locationId } } }
-            : {}),
-        ...(input.managerId === null
-          ? { manager: { disconnect: true } }
-          : input.managerId
-            ? { manager: { connect: { id: input.managerId } } }
-            : {}),
-      });
-
+      const employee = await this.repo.updateEmployee(id, input);
       await this.repo.createAuditLog({
-        actorId: userId,
+        actorId: actor.id,
         action: 'employees.update',
         entityType: 'Employee',
-        entityId: employee.id,
+        entityId: id,
       });
-
-      return toEmployeeDto(employee);
+      return employee;
     } catch (error) {
-      if ((error as { code?: string }).code === 'P2002') {
-        throw new ConflictError('An employee with this email already exists');
-      }
-      throw error;
+      this.rethrowUnique(error, 'Employee code or email already exists');
     }
   }
 
-  async remove(userId: string, id: string) {
-    const companyId = await this.requireCompanyId(userId);
-    const existing = await this.repo.findEmployee(companyId, id);
-    if (!existing) {
-      throw new NotFoundError('Employee not found');
+  async remove(actor: AuthActor, id: string) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, id);
+    const reports = await this.repo.countDirectReports(id);
+    if (reports > 0) {
+      throw new ValidationError('Cannot delete an employee who has direct reports');
     }
-
-    await this.repo.softDelete(id);
+    await this.repo.softDeleteEmployee(id);
     await this.repo.createAuditLog({
-      actorId: userId,
+      actorId: actor.id,
       action: 'employees.delete',
       entityType: 'Employee',
       entityId: id,
     });
-
-    return { deleted: true };
+    return { id, deleted: true };
   }
 
-  async exportCsv(userId: string, query: Pick<EmployeeListQuery, 'search' | 'departmentId' | 'status'>) {
-    const companyId = await this.requireCompanyId(userId);
-    const rows = await this.repo.listForExport(companyId, {
-      search: query.search,
-      departmentId: query.departmentId,
-      status: query.status,
+  async getTimeline(actor: AuthActor, id: string) {
+    const companyId = await this.requireCompanyId(actor.id);
+    const employee = await this.requireEmployee(companyId, id);
+    const events: Array<{ date: string; label: string; type: string }> = [];
+
+    if (employee.joinDate) {
+      events.push({ date: employee.joinDate.toISOString(), label: 'Joined company', type: 'join' });
+    }
+    if (employee.probationEndDate) {
+      events.push({
+        date: employee.probationEndDate.toISOString(),
+        label: 'Probation ended',
+        type: 'probation',
+      });
+    }
+    if (employee.confirmationDate) {
+      events.push({
+        date: employee.confirmationDate.toISOString(),
+        label: 'Confirmed',
+        type: 'confirmation',
+      });
+    }
+    if (employee.exitDate) {
+      events.push({ date: employee.exitDate.toISOString(), label: 'Exit date', type: 'exit' });
+    }
+    events.push({
+      date: employee.createdAt.toISOString(),
+      label: 'Profile created',
+      type: 'created',
     });
 
-    const header = [
-      'First Name',
-      'Last Name',
-      'Email',
-      'Department',
-      'Position',
-      'Manager',
-      'Status',
-      'Joined',
-      'Employment Type',
-    ];
+    return {
+      employeeId: id,
+      status: employee.status,
+      events: events.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
+    };
+  }
 
-    const escape = (value: string) => `"${value.replaceAll('"', '""')}"`;
-    const lines = [
-      header.join(','),
-      ...rows.map((row) =>
-        [
-          row.firstName,
-          row.lastName,
-          row.email,
-          row.department?.name ?? '',
-          row.position ?? '',
-          row.manager ? `${row.manager.firstName} ${row.manager.lastName}` : '',
-          row.status,
-          row.hireDate ? row.hireDate.toISOString().slice(0, 10) : '',
-          row.employmentType,
-        ]
-          .map((cell) => escape(String(cell)))
-          .join(','),
-      ),
-    ];
+  async getActivity(actor: AuthActor, id: string, limit = 20) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, id);
+    const items = await this.repo.listActivity(id, Math.min(50, Math.max(1, limit)));
+    return { items };
+  }
 
-    return lines.join('\n');
+  // —— Emergency contacts ——
+  async createEmergencyContact(actor: AuthActor, employeeId: string, input: CreateEmergencyContactInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const contact = await this.repo.createEmergencyContact(employeeId, input);
+    await this.repo.createAuditLog({
+      actorId: actor.id,
+      action: 'employees.emergency_contact.create',
+      entityType: 'Employee',
+      entityId: employeeId,
+    });
+    return contact;
+  }
+
+  async updateEmergencyContact(
+    actor: AuthActor,
+    employeeId: string,
+    contactId: string,
+    input: UpdateEmergencyContactInput,
+  ) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const existing = await this.repo.findEmergencyContact(employeeId, contactId);
+    if (!existing) throw new NotFoundError('Emergency contact not found');
+    return this.repo.updateEmergencyContact(contactId, input);
+  }
+
+  async deleteEmergencyContact(actor: AuthActor, employeeId: string, contactId: string) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const existing = await this.repo.findEmergencyContact(employeeId, contactId);
+    if (!existing) throw new NotFoundError('Emergency contact not found');
+    await this.repo.softDeleteEmergencyContact(contactId);
+    return { id: contactId, deleted: true };
+  }
+
+  // —— Education ——
+  async createEducation(actor: AuthActor, employeeId: string, input: CreateEducationInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    return this.repo.createEducation(employeeId, input);
+  }
+
+  async updateEducation(actor: AuthActor, employeeId: string, eduId: string, input: UpdateEducationInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const existing = await this.repo.findEducation(employeeId, eduId);
+    if (!existing) throw new NotFoundError('Education record not found');
+    return this.repo.updateEducation(eduId, input);
+  }
+
+  async deleteEducation(actor: AuthActor, employeeId: string, eduId: string) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const existing = await this.repo.findEducation(employeeId, eduId);
+    if (!existing) throw new NotFoundError('Education record not found');
+    await this.repo.softDeleteEducation(eduId);
+    return { id: eduId, deleted: true };
+  }
+
+  // —— Experience ——
+  async createExperience(actor: AuthActor, employeeId: string, input: CreateExperienceInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    return this.repo.createExperience(employeeId, input);
+  }
+
+  async updateExperience(
+    actor: AuthActor,
+    employeeId: string,
+    expId: string,
+    input: UpdateExperienceInput,
+  ) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const existing = await this.repo.findExperience(employeeId, expId);
+    if (!existing) throw new NotFoundError('Experience record not found');
+    return this.repo.updateExperience(expId, input);
+  }
+
+  async deleteExperience(actor: AuthActor, employeeId: string, expId: string) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const existing = await this.repo.findExperience(employeeId, expId);
+    if (!existing) throw new NotFoundError('Experience record not found');
+    await this.repo.softDeleteExperience(expId);
+    return { id: expId, deleted: true };
+  }
+
+  // —— Skills ——
+  async createSkill(actor: AuthActor, employeeId: string, input: CreateSkillInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    try {
+      return await this.repo.createSkill(employeeId, input);
+    } catch (error) {
+      this.rethrowUnique(error, 'Skill already exists for this employee');
+    }
+  }
+
+  async updateSkill(actor: AuthActor, employeeId: string, skillId: string, input: UpdateSkillInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const existing = await this.repo.findSkill(employeeId, skillId);
+    if (!existing) throw new NotFoundError('Skill not found');
+    try {
+      return await this.repo.updateSkill(skillId, input);
+    } catch (error) {
+      this.rethrowUnique(error, 'Skill already exists for this employee');
+    }
+  }
+
+  async deleteSkill(actor: AuthActor, employeeId: string, skillId: string) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const existing = await this.repo.findSkill(employeeId, skillId);
+    if (!existing) throw new NotFoundError('Skill not found');
+    await this.repo.softDeleteSkill(skillId);
+    return { id: skillId, deleted: true };
+  }
+
+  // —— Certifications ——
+  async createCertification(actor: AuthActor, employeeId: string, input: CreateCertificationInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    return this.repo.createCertification(employeeId, input);
+  }
+
+  async updateCertification(
+    actor: AuthActor,
+    employeeId: string,
+    certId: string,
+    input: UpdateCertificationInput,
+  ) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const existing = await this.repo.findCertification(employeeId, certId);
+    if (!existing) throw new NotFoundError('Certification not found');
+    return this.repo.updateCertification(certId, input);
+  }
+
+  async deleteCertification(actor: AuthActor, employeeId: string, certId: string) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const existing = await this.repo.findCertification(employeeId, certId);
+    if (!existing) throw new NotFoundError('Certification not found');
+    await this.repo.softDeleteCertification(certId);
+    return { id: certId, deleted: true };
+  }
+
+  // —— Documents ——
+  async createDocument(actor: AuthActor, employeeId: string, input: CreateDocumentInput) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const doc = await this.repo.createDocument(employeeId, input, actor.id);
+    await this.repo.createAuditLog({
+      actorId: actor.id,
+      action: 'employees.document.create',
+      entityType: 'Employee',
+      entityId: employeeId,
+      metadata: { title: input.title, category: input.category },
+    });
+    return doc;
+  }
+
+  async updateDocument(
+    actor: AuthActor,
+    employeeId: string,
+    docId: string,
+    input: UpdateDocumentInput,
+  ) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const existing = await this.repo.findDocument(employeeId, docId);
+    if (!existing) throw new NotFoundError('Document not found');
+    return this.repo.updateDocument(docId, input);
+  }
+
+  async deleteDocument(actor: AuthActor, employeeId: string, docId: string) {
+    const companyId = await this.requireCompanyId(actor.id);
+    await this.requireEmployee(companyId, employeeId);
+    const existing = await this.repo.findDocument(employeeId, docId);
+    if (!existing) throw new NotFoundError('Document not found');
+    await this.repo.softDeleteDocument(docId);
+    return { id: docId, deleted: true };
   }
 }

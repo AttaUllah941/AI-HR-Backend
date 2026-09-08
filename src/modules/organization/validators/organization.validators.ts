@@ -1,62 +1,75 @@
 import { z } from 'zod';
-
-const blankToUndefined = (value: unknown) =>
-  value === '' || value === null || value === undefined ? undefined : value;
+import { isValidIpOrCidr } from '../../../utils/ip-matcher.js';
 
 const optionalString = (max: number) =>
-  z.preprocess(blankToUndefined, z.string().trim().max(max).optional());
+  z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().max(max).optional().nullable(),
+  );
 
-export const updateCompanySchema = z.object({
-  name: z.string().trim().min(1).max(200).optional(),
-  legalName: optionalString(200),
-  email: z.preprocess(blankToUndefined, z.string().trim().email().max(255).optional()),
-  phone: optionalString(50),
-  website: optionalString(255),
-  logoUrl: optionalString(500),
-  addressLine1: optionalString(255),
-  addressLine2: optionalString(255),
+const ipOrCidr = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => isValidIpOrCidr(value), 'Must be a valid IP address or CIDR range');
+
+export const createBranchSchema = z.object({
+  name: z.string().min(1).max(150),
+  code: z.string().min(1).max(50),
+  addressLine1: optionalString(200),
+  addressLine2: optionalString(200),
   city: optionalString(100),
   state: optionalString(100),
   country: optionalString(100),
   postalCode: optionalString(30),
-  timezone: z.string().trim().min(1).max(100).optional(),
-  locale: z.string().trim().min(2).max(20).optional(),
+  phone: optionalString(50),
+  email: z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().email().max(255).optional().nullable(),
+  ),
+  isHeadOffice: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+  allowedIps: z.array(ipOrCidr).optional(),
 });
 
+export const updateBranchSchema = createBranchSchema.partial();
+
 export const createDepartmentSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  code: optionalString(40),
+  name: z.string().min(1).max(150),
+  code: z.string().min(1).max(50),
   description: optionalString(500),
-  parentId: z.preprocess(blankToUndefined, z.string().min(1).optional().nullable()),
+  branchId: optionalString(50),
+  parentId: optionalString(50),
   isActive: z.boolean().optional(),
 });
 
 export const updateDepartmentSchema = createDepartmentSchema.partial();
 
-export const createLocationSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  code: optionalString(40),
-  addressLine1: optionalString(255),
-  city: optionalString(100),
-  state: optionalString(100),
-  country: optionalString(100),
-  postalCode: optionalString(30),
-  timezone: optionalString(100),
-  isHeadquarters: z.boolean().optional(),
+export const createTeamSchema = z.object({
+  name: z.string().min(1).max(150),
+  code: z.string().min(1).max(50),
+  description: optionalString(500),
+  departmentId: z.string().min(1),
   isActive: z.boolean().optional(),
 });
 
-export const updateLocationSchema = createLocationSchema.partial();
+export const updateTeamSchema = createTeamSchema.partial();
 
-export const listQuerySchema = z.object({
-  search: z.string().trim().max(120).optional(),
-  page: z.coerce.number().int().positive().default(1),
-  pageSize: z.coerce.number().int().positive().max(100).default(20),
+export const createDesignationSchema = z.object({
+  name: z.string().min(1).max(150),
+  code: z.string().min(1).max(50),
+  level: z.number().int().min(1).max(100).optional(),
+  description: optionalString(500),
+  isActive: z.boolean().optional(),
 });
 
-export type UpdateCompanyInput = z.infer<typeof updateCompanySchema>;
+export const updateDesignationSchema = createDesignationSchema.partial();
+
+export type CreateBranchInput = z.infer<typeof createBranchSchema>;
+export type UpdateBranchInput = z.infer<typeof updateBranchSchema>;
 export type CreateDepartmentInput = z.infer<typeof createDepartmentSchema>;
 export type UpdateDepartmentInput = z.infer<typeof updateDepartmentSchema>;
-export type CreateLocationInput = z.infer<typeof createLocationSchema>;
-export type UpdateLocationInput = z.infer<typeof updateLocationSchema>;
-export type ListQueryInput = z.infer<typeof listQuerySchema>;
+export type CreateTeamInput = z.infer<typeof createTeamSchema>;
+export type UpdateTeamInput = z.infer<typeof updateTeamSchema>;
+export type CreateDesignationInput = z.infer<typeof createDesignationSchema>;
+export type UpdateDesignationInput = z.infer<typeof updateDesignationSchema>;
