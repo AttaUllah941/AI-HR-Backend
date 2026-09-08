@@ -15,6 +15,8 @@ import { notificationsRouter } from '../modules/notifications/notifications.rout
 import { profileRouter } from '../modules/profile/profile.routes.js';
 import { settingsRouter } from '../modules/settings/settings.routes.js';
 import { filesRouter } from '../modules/files/files.routes.js';
+import { globalRouter } from '../modules/global/global.routes.js';
+import { securityRouter } from '../modules/security/security.routes.js';
 
 export const apiRouter = Router();
 
@@ -34,3 +36,5 @@ apiRouter.use('/notifications', notificationsRouter);
 apiRouter.use('/profile', profileRouter);
 apiRouter.use('/settings', settingsRouter);
 apiRouter.use('/files', filesRouter);
+apiRouter.use('/global', globalRouter);
+apiRouter.use('/security', securityRouter);

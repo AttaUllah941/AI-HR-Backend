@@ -1,0 +1,21 @@
+# Production-oriented overrides (internal Postgres, stricter restart policy).
+# Usage:
+#   cp .env.production.example .env.production
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --build
+
+services:
+  postgres:
+    # Clear host port publishing from the base compose file
+    ports: !reset []
+    restart: always
+
+  api:
+    restart: always
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+  web:
+    restart: always

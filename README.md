@@ -359,6 +359,88 @@ View-only users see their own uploads / linked employee docs; staff with broader
 
 Frontend: `/files` shell (overview, library, documents, resumes).
 
+## Phase 17 global features
+
+Cross-app search, bookmarks, recent searches, and keyboard shortcuts under `/api/v1/global` (auth required; result types are permission-scoped).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/global/search` | Multi-entity search (`q`, `types`, `page`, `pageSize`, `sortBy`, `sortDir`, filters) |
+| GET | `/api/v1/global/shortcuts` | Keyboard shortcut catalog |
+| GET | `/api/v1/global/recent-searches` | Recent queries for the signed-in user |
+| DELETE | `/api/v1/global/recent-searches` | Clear all recent searches |
+| DELETE | `/api/v1/global/recent-searches/:id` | Delete one recent search |
+| GET/POST | `/api/v1/global/bookmarks` | List / save bookmarks |
+| PATCH/DELETE | `/api/v1/global/bookmarks/:id` | Update / remove bookmark |
+
+Searchable types: `employees`, `departments`, `branches`, `candidates`, `jobs`, `files`, `users`.
+
+Frontend: `/search` page + top-bar command palette (`Ctrl/⌘ K`) and shortcuts help (`Ctrl/⌘ /`). Chord shortcuts: `G` then `D/E/F/P/S`.
+
+## Phase 18 security hardening
+
+Company security policy, login lockouts, login-attempt audit, production secret checks, and a hardening review API under `/api/v1/security` (auth + `settings:view` / `settings:update`).
+
+Runtime hardening also includes Helmet (CSP in production), CORS allowlist, auth/global rate limits, refresh-token rate limiting, password-policy enforcement on register, IP allowlist on login, and account lockout after repeated failed logins.
+
+| Method | Path | Permission | Description |
+|--------|------|------------|-------------|
+| GET | `/api/v1/security/status` | `settings:view` | Policy + MFA/lockout metrics + runtime flags |
+| GET | `/api/v1/security/review` | `settings:view` | Pass/warn/fail hardening checklist |
+| GET | `/api/v1/security/policy` | `settings:view` | Current company security policy |
+| PATCH | `/api/v1/security/policy` | `settings:update` | Update lockout, password, MFA, allowlist |
+| GET | `/api/v1/security/login-attempts` | `settings:view` | Paginated login attempt log |
+
+Policy fields: `maxFailedLogins`, `lockoutMinutes`, password complexity rules, `requireMfaForPrivileged`, `allowSelfRegistration`, `refreshRateLimitPerWindow`, `ipAllowlist` (empty = allow all).
+
+Frontend: Settings → **Security** (`/settings/security`) — review checklist, policy form, recent login attempts.
+
+## Phase 19 testing & optimization
+
+Test harness expansion, shared pagination, DB indexes for hot paths, shell bundle/a11y polish, and error-path coverage.
+
+### Backend
+- Unit tests (`node:test` + `tsx`): pagination, security helpers, auth validators, error middleware, existing IP utilities
+- API smoke test: welcome `/`, `/api/v1/health`, unknown route → `ROUTE_NOT_FOUND`
+- Shared `src/utils/pagination.ts` used across list services (notifications, files, settings, payroll, recruitment, performance, AI, global, security)
+- Migration `20260907110000_phase19_indexes`: composite indexes for sessions, users, employees, login attempts, search sorts, etc. (apply with `npx prisma migrate deploy` on a healthy DB; local embedded Postgres may need rebuild if previously corrupted)
+- Production Angular budgets adjusted after shell review (initial warn 650kB; component styles warn 8kB)
+
+```bash
+npm test
+npm run lint
+```
+
+### Frontend
+- Vitest unit tests for `AuthService` session/permissions and route guards
+- Lazy-load command palette / shortcuts dialogs from main layout (smaller authenticated shell chunk)
+- Accessibility: skip link to `#main-content`, `aria-expanded` / `aria-controls` on mobile nav, `ariaCurrentWhenActive` on sidebar links
+
+```bash
+npm run test:ci
+npm run build
+```
+
+## Phase 20 production deployment
+
+Docker/Compose stack, production env templates, CI workflows, health probes, backup scripts, and the ops guide in [`docs/PRODUCTION.md`](docs/PRODUCTION.md).
+
+| Asset | Purpose |
+|-------|---------|
+| `Dockerfile` | Multi-stage API image (non-root, migrate on start, healthcheck) |
+| `docker-compose.yml` | postgres + api + web (+ optional `db-backup` profile) |
+| `docker-compose.prod.yml` | Production overlays (no public Postgres port) |
+| `.env.production.example` | Production secrets template |
+| `.github/workflows/ci.yml` | Lint, test, build on push/PR |
+| `scripts/backup-db.sh` / `.ps1` | Logical DB dumps |
+| `GET /api/v1/health/live\|ready\|metrics` | Probes + process metrics |
+| Frontend `nginx.conf` | SPA, `/api` proxy, security/cache headers |
+
+```bash
+docker compose up -d --build
+docker compose --profile backup run --rm db-backup
+```
+
 ### Seeded demo user
 
 After `npm run prisma:seed`:
@@ -371,5 +453,8 @@ After `npm run prisma:seed`:
 
 ```bash
 docker compose up -d postgres   # DB only
-docker compose up --build       # API + DB (requires Docker)
+docker compose up --build       # API + web + DB
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --build
 ```
+
+See [docs/PRODUCTION.md](docs/PRODUCTION.md) for production deployment, backups, and readiness checklist.

@@ -12,7 +12,7 @@ export function notFoundHandler(_req: Request, _res: Response, next: NextFunctio
 
 export function errorHandler(
   err: unknown,
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction,
 ): void {
@@ -64,6 +64,7 @@ export function errorHandler(
   }
 
   logger.error('Unhandled error', {
+    requestId: req.requestId,
     error: err instanceof Error ? err.message : String(err),
     stack: err instanceof Error ? err.stack : undefined,
   });

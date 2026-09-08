@@ -4,15 +4,15 @@ services:
     container_name: zenith-hr-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: zenith
-      POSTGRES_PASSWORD: zenith
-      POSTGRES_DB: zenith_hr
+      POSTGRES_USER: ${POSTGRES_USER:-zenith}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zenith}
+      POSTGRES_DB: ${POSTGRES_DB:-zenith_hr}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - zenith_pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U zenith -d zenith_hr"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -26,13 +26,25 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://zenith:zenith@postgres:5432/zenith_hr?schema=public
-      CORS_ORIGIN: http://localhost:4200,http://localhost:8080
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-zenith}:${POSTGRES_PASSWORD:-zenith}@postgres:5432/${POSTGRES_DB:-zenith_hr}?schema=public
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:4200,http://localhost:8080}
+      APP_URL: ${APP_URL:-http://localhost:8080}
+      FILE_STORAGE_ROOT: /app/uploads
     ports:
-      - "3000:3000"
+      - "${API_PORT:-3000}:3000"
+    volumes:
+      - zenith_uploads:/app/uploads
+      - zenith_api_logs:/app/logs
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/v1/health/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
 
   web:
     build:
@@ -41,9 +53,37 @@ services:
     container_name: zenith-hr-web
     restart: unless-stopped
     ports:
-      - "8080:80"
+      - "${WEB_PORT:-8080}:80"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+
+  # Optional: one-shot DB backup → ./backups
+  # Usage: docker compose --profile backup run --rm db-backup
+  db-backup:
+    profiles: ["backup"]
+    image: postgres:16-alpine
+    container_name: zenith-hr-db-backup
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-zenith}
+      POSTGRES_USER: ${POSTGRES_USER:-zenith}
+      POSTGRES_DB: ${POSTGRES_DB:-zenith_hr}
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        FILE="/backups/zenith_hr_$$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+        echo "Writing $$FILE"
+        pg_dump -h postgres -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" --no-owner --format=plain | gzip -c > "$$FILE"
+        ls -lh "$$FILE"
 
 volumes:
   zenith_pg_data:
+  zenith_uploads:
+  zenith_api_logs:
