@@ -1,8 +1,10 @@
 node_modules/
 dist/
 logs/*.log
+logs/*.log.*
 .env
 .env.local
+.env.*.local
 .DS_Store
 coverage/
 generated/
@@ -13,3 +15,6 @@ generated/
 .claude/
 .windsurf/
 skills-lock.json
+
+# Local PostgreSQL data directories (use Docker Compose volume instead)
+data/

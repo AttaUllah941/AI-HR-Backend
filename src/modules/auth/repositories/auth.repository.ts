@@ -126,6 +126,13 @@ export class AuthRepository {
     });
   }
 
+  invalidatePasswordResetTokens(userId: string) {
+    return prisma.passwordResetToken.updateMany({
+      where: { userId, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+  }
+
   createPasswordResetToken(userId: string, tokenHash: string, expiresAt: Date) {
     return prisma.passwordResetToken.create({
       data: { userId, tokenHash, expiresAt },

@@ -9,6 +9,8 @@ import { hashPassword, verifyPassword } from '../../../utils/password.js';
 import { generateRawToken, hashToken } from '../../../utils/token-hash.js';
 import {
   getRefreshExpiryDate,
+  getRefreshExpiresIn,
+  msToJwtDuration,
   signAccessToken,
   signMfaChallengeToken,
   signRefreshToken,
@@ -93,17 +95,29 @@ export class AuthService {
       throw new UnauthorizedError('Invalid email or password');
     }
 
-    if (user.status === 'SUSPENDED' || user.status === 'DELETED') {
-      throw new ForbiddenError('Account is not allowed to sign in');
-    }
-
     const valid = await verifyPassword(input.password, user.passwordHash);
     if (!valid) {
       throw new UnauthorizedError('Invalid email or password');
     }
 
+    if (
+      user.status === 'SUSPENDED' ||
+      user.status === 'DELETED' ||
+      user.status === 'INACTIVE'
+    ) {
+      throw new ForbiddenError('Account is not allowed to sign in');
+    }
+
+    if (user.status === 'PENDING_VERIFICATION') {
+      throw new ForbiddenError('Please verify your email before signing in');
+    }
+
     if (user.mfaEnabled && user.mfaSecret) {
-      const mfaToken = signMfaChallengeToken({ sub: user.id, email: user.email });
+      const mfaToken = signMfaChallengeToken({
+        sub: user.id,
+        email: user.email,
+        remember: Boolean(input.remember),
+      });
       return {
         mfaRequired: true as const,
         mfaToken,
@@ -116,7 +130,7 @@ export class AuthService {
       };
     }
 
-    return this.issueSession(user, meta, 'auth.login');
+    return this.issueSession(user, meta, 'auth.login', Boolean(input.remember));
   }
 
   async verifyMfa(input: MfaVerifyInput, meta: { ip?: string; userAgent?: string }) {
@@ -136,7 +150,7 @@ export class AuthService {
       throw new UnauthorizedError('Invalid authentication code');
     }
 
-    return this.issueSession(user, meta, 'auth.mfa.verify');
+    return this.issueSession(user, meta, 'auth.mfa.verify', Boolean(challenge.remember));
   }
 
   async refresh(input: RefreshInput) {
@@ -154,7 +168,13 @@ export class AuthService {
     }
 
     const user = await this.repo.findById(payload.sub);
-    if (!user || user.status === 'SUSPENDED' || user.status === 'DELETED') {
+    if (
+      !user ||
+      user.status === 'SUSPENDED' ||
+      user.status === 'DELETED' ||
+      user.status === 'INACTIVE' ||
+      user.status === 'PENDING_VERIFICATION'
+    ) {
       throw new UnauthorizedError('Account is not allowed to refresh');
     }
 
@@ -166,10 +186,13 @@ export class AuthService {
       permissions,
     });
 
-    const refreshToken = signRefreshToken({ sub: user.id, sid: session.id });
+    // Preserve remaining session lifetime on rotation (do not extend beyond DB expiry).
+    const refreshToken = signRefreshToken(
+      { sub: user.id, sid: session.id },
+      msToJwtDuration(Math.max(session.expiresAt.getTime() - Date.now(), 60_000)),
+    );
     await this.repo.updateSession(session.id, {
       refreshTokenHash: hashToken(refreshToken),
-      expiresAt: getRefreshExpiryDate(),
     });
 
     return {
@@ -218,6 +241,8 @@ export class AuthService {
   async forgotPassword(input: ForgotPasswordInput) {
     const user = await this.repo.findByEmail(input.email);
     if (user) {
+      await this.repo.invalidatePasswordResetTokens(user.id);
+
       const rawToken = generateRawToken();
       await this.repo.createPasswordResetToken(
         user.id,
@@ -286,6 +311,10 @@ export class AuthService {
       throw new NotFoundError('User not found');
     }
 
+    if (user.mfaEnabled) {
+      throw new ConflictError('MFA is already enabled for this account');
+    }
+
     const secret = createMfaSecret();
     await this.repo.updateUser(userId, { mfaSecret: secret, mfaEnabled: false });
 
@@ -346,13 +375,15 @@ export class AuthService {
     user: UserWithAuth,
     meta: { ip?: string; userAgent?: string },
     action: string,
+    remember = false,
   ) {
     const { roles, permissions } = extractRolesAndPermissions(user);
+    const refreshExpiresIn = getRefreshExpiresIn(remember);
 
     const session = await this.repo.createSession({
       userId: user.id,
       refreshTokenHash: 'pending',
-      expiresAt: getRefreshExpiryDate(),
+      expiresAt: getRefreshExpiryDate(remember),
       ipAddress: meta.ip,
       userAgent: meta.userAgent,
     });
@@ -363,7 +394,7 @@ export class AuthService {
       roles,
       permissions,
     });
-    const refreshToken = signRefreshToken({ sub: user.id, sid: session.id });
+    const refreshToken = signRefreshToken({ sub: user.id, sid: session.id }, refreshExpiresIn);
 
     await this.repo.updateSession(session.id, {
       refreshTokenHash: hashToken(refreshToken),
@@ -377,10 +408,8 @@ export class AuthService {
       entityId: user.id,
       ipAddress: meta.ip,
       userAgent: meta.userAgent,
+      metadata: { remember },
     });
-
-    // Auto-activate pending users on first successful password login in Phase 2
-    // if they somehow skip email verify in early environments — keep status as-is otherwise.
 
     return {
       mfaRequired: false as const,

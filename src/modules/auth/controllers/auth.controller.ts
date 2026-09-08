@@ -4,6 +4,7 @@ import { successResponse } from '../../../interfaces/api-response.js';
 import {
   forgotPasswordSchema,
   loginSchema,
+  logoutSchema,
   mfaDisableSchema,
   mfaEnableSchema,
   mfaVerifySchema,
@@ -42,9 +43,8 @@ export class AuthController {
   };
 
   logout = async (req: Request, res: Response): Promise<void> => {
-    const refreshToken =
-      typeof req.body?.refreshToken === 'string' ? req.body.refreshToken : undefined;
-    const data = await this.service.logout(req.user!.id, refreshToken);
+    const input = logoutSchema.parse(req.body ?? {});
+    const data = await this.service.logout(req.user!.id, input.refreshToken);
     res.json(successResponse(data, 'Logged out'));
   };
 
@@ -110,7 +110,7 @@ export class AuthController {
             'reset-password',
             'verify-email',
             'mfa',
-            'rbac',
+            'jwt-rbac-claims',
           ],
         },
         'Auth module status',
