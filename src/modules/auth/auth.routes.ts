@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from '../../middleware/async-handler.js';
 import { authMiddleware } from '../../middleware/auth.middleware.js';
-import { authRateLimiter } from '../../middleware/auth-rate-limit.middleware.js';
+import { authRateLimiter, refreshRateLimiter } from '../../middleware/auth-rate-limit.middleware.js';
 import { validateBody } from '../../middleware/validate.middleware.js';
 import { AuthController } from './controllers/auth.controller.js';
 import {
@@ -9,6 +9,7 @@ import {
   loginSchema,
   mfaDisableSchema,
   mfaEnableSchema,
+  mfaSetupSchema,
   mfaVerifySchema,
   refreshSchema,
   registerSchema,
@@ -36,7 +37,7 @@ authRouter.post(
 );
 authRouter.post(
   '/refresh',
-  authRateLimiter,
+  refreshRateLimiter,
   validateBody(refreshSchema),
   asyncHandler(controller.refresh),
 );
@@ -67,7 +68,12 @@ authRouter.post(
 
 authRouter.get('/me', authMiddleware, asyncHandler(controller.me));
 authRouter.post('/logout', authMiddleware, asyncHandler(controller.logout));
-authRouter.post('/mfa/setup', authMiddleware, asyncHandler(controller.setupMfa));
+authRouter.post(
+  '/mfa/setup',
+  authMiddleware,
+  validateBody(mfaSetupSchema),
+  asyncHandler(controller.setupMfa),
+);
 authRouter.post(
   '/mfa/enable',
   authMiddleware,

@@ -65,9 +65,7 @@ export class PayrollService {
 
   private canManageCompanyWide(actor: AuthActor): boolean {
     return (
-      actor.permissions.includes('payroll:update') ||
-      actor.permissions.includes('payroll:approve') ||
-      actor.permissions.includes('payroll:create')
+      actor.permissions.includes('payroll:update') || actor.permissions.includes('payroll:approve')
     );
   }
 
@@ -141,9 +139,9 @@ export class PayrollService {
         month: run.month,
         status: run.status,
         title: run.title,
-        entryCount: run.entries.length,
-        grossPay: roundMoney(run.entries.reduce((s, e) => s + e.grossPay, 0)),
-        netPay: roundMoney(run.entries.reduce((s, e) => s + e.netPay, 0)),
+        entryCount: run.entryCount,
+        grossPay: roundMoney(run.grossPay),
+        netPay: roundMoney(run.netPay),
       })),
     };
   }
@@ -205,11 +203,11 @@ export class PayrollService {
         month: run.month,
         status: run.status,
         title: run.title,
-        entryCount: run.entries.length,
-        grossPay: roundMoney(run.entries.reduce((s, e) => s + e.grossPay, 0)),
-        netPay: roundMoney(run.entries.reduce((s, e) => s + e.netPay, 0)),
-        totalTax: roundMoney(run.entries.reduce((s, e) => s + e.totalTax, 0)),
-        totalDeductions: roundMoney(run.entries.reduce((s, e) => s + e.totalDeductions, 0)),
+        entryCount: run.entryCount,
+        grossPay: roundMoney(run.grossPay),
+        netPay: roundMoney(run.netPay),
+        totalTax: roundMoney(run.totalTax),
+        totalDeductions: roundMoney(run.totalDeductions),
       })),
     };
   }
@@ -395,6 +393,10 @@ export class PayrollService {
   async listRuns(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
     const { page, pageSize } = parsePagination(params);
+    if (!this.canManageCompanyWide(actor) && !actor.permissions.includes('payroll:create')) {
+      // Run-level data (headcount, totals) is not exposed to plain view holders.
+      return { items: [], pagination: paginationMeta(page, pageSize, 0) };
+    }
     const year = params.year ? Number(params.year) : undefined;
     const month = params.month ? Number(params.month) : undefined;
     if (year !== undefined && !Number.isFinite(year)) throw new ValidationError('Invalid year');
@@ -433,10 +435,15 @@ export class PayrollService {
     if (!run) throw new NotFoundError('Payroll run not found');
 
     if (!this.canManageCompanyWide(actor)) {
+      if (run.status !== 'APPROVED' && run.status !== 'PAID') {
+        throw new NotFoundError('Payroll run not found');
+      }
       const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
+      const entries = run.entries.filter((e) => e.employeeId === selfId);
       return {
         ...run,
-        entries: run.entries.filter((e) => e.employeeId === selfId),
+        entries,
+        _count: { entries: entries.length },
       };
     }
     return run;
@@ -470,7 +477,9 @@ export class PayrollService {
       throw new ValidationError('Only draft or completed runs can be updated');
     }
 
-    const run = await this.repo.updateRun(id, input);
+    const claimed = await this.repo.transitionRun(id, companyId, ['DRAFT', 'COMPLETED'], input);
+    if (claimed === 0) throw new ConflictError('Payroll run status changed; reload and try again');
+    const run = await this.repo.findRun(companyId, id);
     await this.repo.createAuditLog({
       actorId: actor.id,
       action: 'payroll.run.update',
@@ -497,11 +506,16 @@ export class PayrollService {
       this.repo.findTaxSetting(companyId),
     ]);
 
-    // One structure per employee — prefer most recently updated if duplicates
+    // One structure per employee: the latest effectiveFrom (<= period end) wins.
     const byEmployee = new Map<string, (typeof structures)[number]>();
     for (const structure of structures) {
       const prev = byEmployee.get(structure.employeeId);
-      if (!prev || structure.updatedAt > prev.updatedAt) {
+      if (
+        !prev ||
+        structure.effectiveFrom > prev.effectiveFrom ||
+        (structure.effectiveFrom.getTime() === prev.effectiveFrom.getTime() &&
+          structure.updatedAt > prev.updatedAt)
+      ) {
         byEmployee.set(structure.employeeId, structure);
       }
     }
@@ -509,125 +523,171 @@ export class PayrollService {
     const standardRate = taxSetting?.standardRate ?? 0;
     const personalAllowanceMonthly = (taxSetting?.personalAllowance ?? 0) / 12;
 
-    await this.repo.runTransaction(async (tx) => {
-      await this.repo.updateRun(id, { status: 'PROCESSING' }, tx);
-      await this.repo.deleteRunEntries(id, tx);
+    type ComputedEntry = {
+      structure: (typeof structures)[number];
+      basic: number;
+      lines: {
+        componentId?: string | null;
+        kind: SalaryComponentKind;
+        label: string;
+        amount: number;
+      }[];
+      totalAllowances: number;
+      totalBonuses: number;
+      totalDeductions: number;
+      totalTax: number;
+      grossPay: number;
+      netPay: number;
+    };
 
-      for (const structure of byEmployee.values()) {
-        const basic = roundMoney(structure.basicSalary);
-        const lines: {
-          componentId?: string | null;
-          kind: SalaryComponentKind;
-          label: string;
-          amount: number;
-        }[] = [];
+    const computed: ComputedEntry[] = [];
+    const negativeNet: string[] = [];
 
-        let totalAllowances = 0;
-        let totalBonuses = 0;
-        let totalDeductions = 0;
-        let totalTax = 0;
-        let taxableAllowances = 0;
-        let hasTaxComponent = false;
+    for (const structure of byEmployee.values()) {
+      const basic = roundMoney(structure.basicSalary);
+      const lines: ComputedEntry['lines'] = [];
 
-        for (const item of structure.components) {
-          const component = item.component;
-          if (!component || component.deletedAt || !component.isActive) continue;
+      let totalAllowances = 0;
+      let totalBonuses = 0;
+      let totalDeductions = 0;
+      let totalTax = 0;
+      let taxableAllowances = 0;
+      let hasTaxComponent = false;
 
-          const amount = computeComponentAmount(basic, component.calcType, item.value);
-          if (amount === 0) continue;
+      for (const item of structure.components) {
+        const component = item.component;
+        if (!component || component.deletedAt || !component.isActive) continue;
 
-          lines.push({
-            componentId: component.id,
-            kind: component.kind,
-            label: component.name,
-            amount,
-          });
+        const amount = computeComponentAmount(basic, component.calcType, item.value);
+        if (amount === 0) continue;
 
-          switch (component.kind) {
-            case 'ALLOWANCE':
-              totalAllowances = roundMoney(totalAllowances + amount);
-              if (component.isTaxable) {
-                taxableAllowances = roundMoney(taxableAllowances + amount);
-              }
-              break;
-            case 'BONUS':
-              totalBonuses = roundMoney(totalBonuses + amount);
-              break;
-            case 'DEDUCTION':
-              totalDeductions = roundMoney(totalDeductions + amount);
-              break;
-            case 'TAX':
-              totalTax = roundMoney(totalTax + amount);
-              hasTaxComponent = true;
-              break;
-            default:
-              break;
-          }
+        lines.push({
+          componentId: component.id,
+          kind: component.kind,
+          label: component.name,
+          amount,
+        });
+
+        switch (component.kind) {
+          case 'ALLOWANCE':
+            totalAllowances = roundMoney(totalAllowances + amount);
+            if (component.isTaxable) {
+              taxableAllowances = roundMoney(taxableAllowances + amount);
+            }
+            break;
+          case 'BONUS':
+            totalBonuses = roundMoney(totalBonuses + amount);
+            break;
+          case 'DEDUCTION':
+            totalDeductions = roundMoney(totalDeductions + amount);
+            break;
+          case 'TAX':
+            totalTax = roundMoney(totalTax + amount);
+            hasTaxComponent = true;
+            break;
+          default:
+            break;
         }
-
-        if (standardRate > 0 && !hasTaxComponent) {
-          const taxable = Math.max(
-            0,
-            roundMoney(basic + taxableAllowances + totalBonuses - personalAllowanceMonthly),
-          );
-          const incomeTax = roundMoney((taxable * standardRate) / 100);
-          if (incomeTax > 0) {
-            lines.push({
-              componentId: null,
-              kind: 'TAX',
-              label: 'Income Tax',
-              amount: incomeTax,
-            });
-            totalTax = roundMoney(totalTax + incomeTax);
-          }
-        }
-
-        const grossPay = roundMoney(basic + totalAllowances + totalBonuses);
-        const netPay = roundMoney(grossPay - totalDeductions - totalTax);
-
-        const entry = await this.repo.createEntry(
-          {
-            companyId,
-            payrollRunId: id,
-            employeeId: structure.employeeId,
-            basicSalary: basic,
-            totalAllowances,
-            totalBonuses,
-            totalDeductions,
-            totalTax,
-            grossPay,
-            netPay,
-            lines,
-          },
-          tx,
-        );
-
-        await this.repo.createPayslip(
-          {
-            companyId,
-            employeeId: structure.employeeId,
-            payrollEntryId: entry.id,
-            year: existing.year,
-            month: existing.month,
-            basicSalary: basic,
-            totalAllowances,
-            totalBonuses,
-            totalDeductions,
-            totalTax,
-            grossPay,
-            netPay,
-            currency: structure.currency,
-          },
-          tx,
-        );
       }
 
-      await this.repo.updateRun(
-        id,
-        { status: 'COMPLETED', processedAt: new Date() },
-        tx,
+      if (standardRate > 0 && !hasTaxComponent) {
+        const taxable = Math.max(
+          0,
+          roundMoney(basic + taxableAllowances + totalBonuses - personalAllowanceMonthly),
+        );
+        const incomeTax = roundMoney((taxable * standardRate) / 100);
+        if (incomeTax > 0) {
+          lines.push({
+            componentId: null,
+            kind: 'TAX',
+            label: 'Income Tax',
+            amount: incomeTax,
+          });
+          totalTax = roundMoney(totalTax + incomeTax);
+        }
+      }
+
+      const grossPay = roundMoney(basic + totalAllowances + totalBonuses);
+      const netPay = roundMoney(grossPay - totalDeductions - totalTax);
+      if (netPay < 0) {
+        negativeNet.push(structure.employee?.employeeCode ?? structure.employeeId);
+      }
+
+      computed.push({
+        structure,
+        basic,
+        lines,
+        totalAllowances,
+        totalBonuses,
+        totalDeductions,
+        totalTax,
+        grossPay,
+        netPay,
+      });
+    }
+
+    if (negativeNet.length > 0) {
+      throw new ValidationError(
+        `Cannot process payroll: deductions and tax exceed gross pay (negative net pay) for ${negativeNet.length} employee(s): ${negativeNet.slice(0, 10).join(', ')}${negativeNet.length > 10 ? ', ...' : ''}. Fix their salary structures and process again.`,
       );
-    });
+    }
+
+    await this.repo.runTransaction(
+      async (tx) => {
+        const claimed = await this.repo.transitionRun(
+          id,
+          companyId,
+          ['DRAFT', 'COMPLETED'],
+          { status: 'PROCESSING' },
+          tx,
+        );
+        if (claimed === 0) {
+          throw new ConflictError('Payroll run status changed; reload and try again');
+        }
+        await this.repo.deleteRunEntries(id, tx);
+
+        for (const row of computed) {
+          const entry = await this.repo.createEntry(
+            {
+              companyId,
+              payrollRunId: id,
+              employeeId: row.structure.employeeId,
+              basicSalary: row.basic,
+              totalAllowances: row.totalAllowances,
+              totalBonuses: row.totalBonuses,
+              totalDeductions: row.totalDeductions,
+              totalTax: row.totalTax,
+              grossPay: row.grossPay,
+              netPay: row.netPay,
+              lines: row.lines,
+            },
+            tx,
+          );
+
+          await this.repo.createPayslip(
+            {
+              companyId,
+              employeeId: row.structure.employeeId,
+              payrollEntryId: entry.id,
+              year: existing.year,
+              month: existing.month,
+              basicSalary: row.basic,
+              totalAllowances: row.totalAllowances,
+              totalBonuses: row.totalBonuses,
+              totalDeductions: row.totalDeductions,
+              totalTax: row.totalTax,
+              grossPay: row.grossPay,
+              netPay: row.netPay,
+              currency: row.structure.currency,
+            },
+            tx,
+          );
+        }
+
+        await this.repo.updateRun(id, { status: 'COMPLETED', processedAt: new Date() }, tx);
+      },
+      { timeout: 120_000, maxWait: 10_000 },
+    );
 
     await this.repo.createAuditLog({
       actorId: actor.id,
@@ -648,11 +708,20 @@ export class PayrollService {
       throw new ValidationError('Only completed payroll runs can be approved');
     }
 
-    const run = await this.repo.updateRun(id, {
+
+    // Maker-checker: the user who processed the run cannot also approve it.
+    const processedByActor = await this.repo.countAuditByActor('payroll.run.process', id, actor.id);
+    if (processedByActor > 0) {
+      throw new ForbiddenError('You processed this payroll run and cannot approve it');
+    }
+
+    const claimed = await this.repo.transitionRun(id, companyId, ['COMPLETED'], {
       status: 'APPROVED',
       approvedAt: new Date(),
       approvedBy: actor.id,
     });
+    if (claimed === 0) throw new ConflictError('Payroll run status changed; reload and try again');
+    const run = await this.repo.findRun(companyId, id);
 
     await this.repo.createAuditLog({
       actorId: actor.id,
@@ -673,7 +742,16 @@ export class PayrollService {
 
     const paidAt = new Date();
     await this.repo.runTransaction(async (tx) => {
-      await this.repo.updateRun(id, { status: 'PAID', paidAt }, tx);
+      const claimed = await this.repo.transitionRun(
+        id,
+        companyId,
+        ['APPROVED'],
+        { status: 'PAID', paidAt },
+        tx,
+      );
+      if (claimed === 0) {
+        throw new ConflictError('Payroll run status changed; reload and try again');
+      }
       await this.repo.markPayslipsPaidForRun(id, paidAt, tx);
     });
 
@@ -694,7 +772,20 @@ export class PayrollService {
       throw new ValidationError('Only draft or completed runs can be cancelled');
     }
 
-    const run = await this.repo.updateRun(id, { status: 'CANCELLED' });
+    await this.repo.runTransaction(async (tx) => {
+      const claimed = await this.repo.transitionRun(
+        id,
+        companyId,
+        ['DRAFT', 'COMPLETED'],
+        { status: 'CANCELLED' },
+        tx,
+      );
+      if (claimed === 0) {
+        throw new ConflictError('Payroll run status changed; reload and try again');
+      }
+      await this.repo.voidPayslipsForRun(id, tx);
+    });
+    const run = await this.repo.findRun(companyId, id);
     await this.repo.createAuditLog({
       actorId: actor.id,
       action: 'payroll.run.cancel',
@@ -712,6 +803,9 @@ export class PayrollService {
     const { page, pageSize } = parsePagination(params);
     let employeeId = params.employeeId || undefined;
     if (!this.canManageCompanyWide(actor)) {
+      if (run.status !== 'APPROVED' && run.status !== 'PAID') {
+        throw new NotFoundError('Payroll run not found');
+      }
       employeeId = await this.resolveEmployeeId(companyId, actor.id, null);
     }
 
@@ -745,6 +839,7 @@ export class PayrollService {
     const { items, total } = await this.repo.listPayslips(companyId, {
       page,
       pageSize,
+      visibleOnly: !this.canManageCompanyWide(actor),
       employeeId,
       year,
       month,
@@ -762,6 +857,10 @@ export class PayrollService {
       const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
       if (payslip.employeeId !== selfId) {
         throw new ForbiddenError('You can only view your own payslips');
+      }
+      const runStatus = payslip.entry?.run?.status;
+      if (payslip.status === 'VOID' || (runStatus !== 'APPROVED' && runStatus !== 'PAID')) {
+        throw new NotFoundError('Payslip not found');
       }
     }
     return payslip;

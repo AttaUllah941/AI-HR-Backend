@@ -42,8 +42,13 @@ export class NotificationsRepository {
       ...notDeleted,
       ...(query.category ? { category: query.category } : {}),
       ...(query.channel ? { channel: query.channel } : {}),
-      ...(query.status ? { status: query.status } : {}),
-      ...(query.unreadOnly ? { readAt: null, status: { not: 'READ' } } : {}),
+      // An explicit status filter wins; unreadOnly only adds readAt=null and (absent a status) excludes READ.
+      ...(query.status
+        ? { status: query.status }
+        : query.unreadOnly
+          ? { status: { not: 'READ' as const } }
+          : {}),
+      ...(query.unreadOnly ? { readAt: null } : {}),
     };
     return Promise.all([
       prisma.notification.findMany({
@@ -113,6 +118,7 @@ export class NotificationsRepository {
         companyId,
         userId,
         ...notDeleted,
+        channel: 'IN_APP',
         readAt: null,
         status: { not: 'READ' },
       },

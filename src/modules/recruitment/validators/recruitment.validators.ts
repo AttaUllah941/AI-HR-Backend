@@ -7,9 +7,28 @@ const optionalString = (max: number) =>
   );
 
 const requiredDate = z.coerce.date();
+
+// Only http(s) URLs are accepted so that javascript:, data: etc. can never be stored and rendered as links.
+const httpUrl = (max: number) =>
+  z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z
+      .string()
+      .max(max)
+      .refine((value) => {
+        try {
+          const { protocol } = new URL(value);
+          return protocol === 'https:' || protocol === 'http:';
+        } catch {
+          return false;
+        }
+      }, 'Must be a valid http(s) URL')
+      .optional()
+      .nullable(),
+  );
 const employmentType = z.enum(['FULL_TIME', 'PART_TIME', 'CONTRACT', 'INTERN', 'CONSULTANT']);
-const jobStatus = z.enum(['DRAFT', 'OPEN', 'ON_HOLD', 'CLOSED', 'CANCELLED']);
-const applicationStatus = z.enum([
+export const jobStatus = z.enum(['DRAFT', 'OPEN', 'ON_HOLD', 'CLOSED', 'CANCELLED']);
+export const applicationStatus = z.enum([
   'APPLIED',
   'SCREENING',
   'INTERVIEW',
@@ -19,8 +38,8 @@ const applicationStatus = z.enum([
   'WITHDRAWN',
 ]);
 const interviewType = z.enum(['PHONE', 'VIDEO', 'ONSITE', 'TECHNICAL', 'HR', 'FINAL']);
-const interviewStatus = z.enum(['SCHEDULED', 'COMPLETED', 'CANCELLED', 'NO_SHOW']);
-const offerStatus = z.enum(['DRAFT', 'SENT', 'ACCEPTED', 'DECLINED', 'WITHDRAWN', 'EXPIRED']);
+export const interviewStatus = z.enum(['SCHEDULED', 'COMPLETED', 'CANCELLED', 'NO_SHOW']);
+export const offerStatus = z.enum(['DRAFT', 'SENT', 'ACCEPTED', 'DECLINED', 'WITHDRAWN', 'EXPIRED']);
 
 export const createJobOpeningSchema = z.object({
   title: z.string().min(1).max(200),
@@ -51,9 +70,9 @@ export const createCandidateSchema = z.object({
   currentTitle: optionalString(150),
   currentCompany: optionalString(150),
   yearsExperience: z.number().min(0).max(60).optional().nullable(),
-  linkedinUrl: optionalString(500),
-  portfolioUrl: optionalString(500),
-  resumeUrl: optionalString(1000),
+  linkedinUrl: httpUrl(500),
+  portfolioUrl: httpUrl(500),
+  resumeUrl: httpUrl(1000),
   resumeFileName: optionalString(255),
   resumeMimeType: optionalString(100),
   screeningScore: z.number().min(0).max(100).optional().nullable(),
@@ -73,7 +92,6 @@ export const createApplicationSchema = z.object({
   jobOpeningId: z.string().min(1),
   candidateId: z.string().min(1),
   coverLetter: optionalString(5000),
-  status: applicationStatus.optional(),
 });
 
 export const updateApplicationStatusSchema = z.object({
@@ -124,7 +142,6 @@ export const updateOfferSchema = z.object({
   startDate: requiredDate.optional().nullable(),
   expiresAt: requiredDate.optional().nullable(),
   notes: optionalString(2000),
-  status: offerStatus.optional(),
 });
 
 export const respondOfferSchema = z.object({

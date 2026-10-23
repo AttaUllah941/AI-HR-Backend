@@ -11,6 +11,17 @@ export class GlobalRepository {
     });
   }
 
+  findUserContext(userId: string) {
+    return prisma.user.findFirst({
+      where: { id: userId, ...notDeleted },
+      select: {
+        id: true,
+        companyId: true,
+        employee: { select: { id: true } },
+      },
+    });
+  }
+
   searchEmployees(companyId: string, q: string, take: number, extra?: { departmentId?: string; status?: string }) {
     return prisma.employee.findMany({
       where: {
@@ -23,7 +34,6 @@ export class GlobalRepository {
           { lastName: { contains: q, mode: 'insensitive' } },
           { employeeCode: { contains: q, mode: 'insensitive' } },
           { email: { contains: q, mode: 'insensitive' } },
-          { personalEmail: { contains: q, mode: 'insensitive' } },
         ],
       },
       take,
@@ -117,17 +127,36 @@ export class GlobalRepository {
     companyId: string,
     q: string,
     take: number,
-    extra?: { category?: string },
+    extra?: {
+      category?: string;
+      visibility?: { uploadedById: string; employeeId: string | null };
+    },
   ) {
+    const visibilityClause = extra?.visibility
+      ? {
+          OR: [
+            { uploadedById: extra.visibility.uploadedById },
+            ...(extra.visibility.employeeId
+              ? [{ employeeId: extra.visibility.employeeId }]
+              : []),
+          ],
+        }
+      : null;
+
     return prisma.storedFile.findMany({
       where: {
         companyId,
         ...notDeleted,
         ...(extra?.category ? { category: extra.category as never } : {}),
-        OR: [
-          { originalName: { contains: q, mode: 'insensitive' } },
-          { title: { contains: q, mode: 'insensitive' } },
-          { description: { contains: q, mode: 'insensitive' } },
+        AND: [
+          ...(visibilityClause ? [visibilityClause] : []),
+          {
+            OR: [
+              { originalName: { contains: q, mode: 'insensitive' } },
+              { title: { contains: q, mode: 'insensitive' } },
+              { description: { contains: q, mode: 'insensitive' } },
+            ],
+          },
         ],
       },
       take,

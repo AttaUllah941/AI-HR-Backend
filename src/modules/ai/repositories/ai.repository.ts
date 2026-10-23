@@ -63,6 +63,28 @@ export class AiRepository {
     });
   }
 
+  findCompanyName(companyId: string) {
+    return prisma.company.findFirst({
+      where: { id: companyId },
+      select: { name: true },
+    });
+  }
+
+  findEmployeeByUserId(companyId: string, userId: string) {
+    return prisma.employee.findFirst({
+      where: { companyId, userId, ...notDeleted },
+      select: { id: true },
+    });
+  }
+
+  async isDirectReport(companyId: string, managerEmployeeId: string, employeeId: string) {
+    const row = await prisma.employee.findFirst({
+      where: { id: employeeId, companyId, managerId: managerEmployeeId, ...notDeleted },
+      select: { id: true },
+    });
+    return Boolean(row);
+  }
+
   // —— Context loaders ——
 
   findCandidate(companyId: string, id: string) {
@@ -341,11 +363,14 @@ export class AiRepository {
     });
   }
 
-  listMessages(conversationId: string) {
-    return prisma.aiMessage.findMany({
-      where: { conversationId },
-      orderBy: { createdAt: 'asc' },
-    });
+  listMessages(conversationId: string, take = 50) {
+    return prisma.aiMessage
+      .findMany({
+        where: { conversationId },
+        orderBy: { createdAt: 'desc' },
+        take,
+      })
+      .then((rows) => rows.reverse());
   }
 
   // —— Generations ——

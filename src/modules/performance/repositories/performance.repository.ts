@@ -165,6 +165,14 @@ export class PerformanceRepository {
     });
   }
 
+  async isDirectReport(companyId: string, managerEmployeeId: string, employeeId: string): Promise<boolean> {
+    const row = await prisma.employee.findFirst({
+      where: { id: employeeId, companyId, managerId: managerEmployeeId, ...notDeleted },
+      select: { id: true },
+    });
+    return Boolean(row);
+  }
+
   findDesignation(companyId: string, id: string) {
     return prisma.designation.findFirst({
       where: { id, companyId, ...notDeleted },
@@ -573,7 +581,6 @@ export class PerformanceRepository {
         overallRating: data.overallRating ?? null,
         selfComments: data.selfComments ?? null,
         managerComments: data.managerComments ?? null,
-        status: data.status ?? 'DRAFT',
       },
       include: reviewInclude,
     });
@@ -590,7 +597,6 @@ export class PerformanceRepository {
         ...(data.overallRating !== undefined ? { overallRating: data.overallRating } : {}),
         ...(data.selfComments !== undefined ? { selfComments: data.selfComments } : {}),
         ...(data.managerComments !== undefined ? { managerComments: data.managerComments } : {}),
-        ...(data.status !== undefined ? { status: data.status } : {}),
       },
       include: reviewInclude,
     });
@@ -722,7 +728,6 @@ export class PerformanceRepository {
         proposedTitle: data.proposedTitle ?? null,
         reason: data.reason.trim(),
         effectiveDate: data.effectiveDate ?? null,
-        status: data.status ?? 'DRAFT',
       },
       include: promotionInclude,
     });
@@ -739,7 +744,6 @@ export class PerformanceRepository {
         ...(data.proposedTitle !== undefined ? { proposedTitle: data.proposedTitle } : {}),
         ...(data.reason !== undefined ? { reason: data.reason.trim() } : {}),
         ...(data.effectiveDate !== undefined ? { effectiveDate: data.effectiveDate } : {}),
-        ...(data.status !== undefined ? { status: data.status } : {}),
       },
       include: promotionInclude,
     });
@@ -753,7 +757,11 @@ export class PerformanceRepository {
     });
   }
 
-  reviewPromotion(
+  /**
+   * Atomically moves a PENDING promotion to APPROVED/REJECTED. Returns null when the request is
+   * no longer PENDING (e.g. another reviewer got there first).
+   */
+  async reviewPromotion(
     id: string,
     data: {
       status: 'APPROVED' | 'REJECTED';
@@ -763,8 +771,8 @@ export class PerformanceRepository {
     },
     db: DbClient = prisma,
   ) {
-    return db.promotionRequest.update({
-      where: { id },
+    const result = await db.promotionRequest.updateMany({
+      where: { id, status: 'PENDING', ...notDeleted },
       data: {
         status: data.status,
         reviewedBy: data.reviewedBy,
@@ -772,8 +780,24 @@ export class PerformanceRepository {
         reviewNotes: data.reviewNotes ?? null,
         ...(data.effectiveDate !== undefined ? { effectiveDate: data.effectiveDate } : {}),
       },
-      include: promotionInclude,
     });
+    if (result.count === 0) return null;
+    return db.promotionRequest.findUniqueOrThrow({ where: { id }, include: promotionInclude });
+  }
+
+  async findPromotionActorIds(id: string): Promise<string[]> {
+    const logs = await prisma.auditLog.findMany({
+      where: {
+        entityType: 'PromotionRequest',
+        entityId: id,
+        action: {
+          in: ['performance.promotion.create', 'performance.promotion.update', 'performance.promotion.submit'],
+        },
+        actorId: { not: null },
+      },
+      select: { actorId: true },
+    });
+    return [...new Set(logs.map((log) => log.actorId!))];
   }
 
   withdrawPromotion(id: string) {

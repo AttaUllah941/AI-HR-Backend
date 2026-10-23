@@ -317,7 +317,29 @@ export class AttendanceRepository {
     });
   }
 
-  updateAttendance(id: string, data: UpdateAttendanceInput & {
+  /** Applies the update only while `condition` still holds; returns null when it no longer does. */
+  async updateAttendanceIf(
+    id: string,
+    companyId: string,
+    condition: Prisma.AttendanceRecordWhereInput,
+    data: UpdateAttendanceInput & {
+      status?: AttendanceStatus;
+      workMinutes?: number;
+      overtimeMinutes?: number;
+      lateMinutes?: number;
+      checkInIp?: string | null;
+      checkOutIp?: string | null;
+    },
+  ) {
+    const result = await prisma.attendanceRecord.updateMany({
+      where: { id, companyId, deletedAt: null, ...condition },
+      data: this.buildAttendanceUpdate(data),
+    });
+    if (result.count === 0) return null;
+    return this.findAttendance(companyId, id);
+  }
+
+  private buildAttendanceUpdate(data: UpdateAttendanceInput & {
     status?: AttendanceStatus;
     workMinutes?: number;
     overtimeMinutes?: number;
@@ -325,9 +347,7 @@ export class AttendanceRepository {
     checkInIp?: string | null;
     checkOutIp?: string | null;
   }) {
-    return prisma.attendanceRecord.update({
-      where: { id },
-      data: {
+    return {
         ...(data.shiftId !== undefined ? { shiftId: data.shiftId || null } : {}),
         ...(data.checkInAt !== undefined ? { checkInAt: data.checkInAt } : {}),
         ...(data.checkOutAt !== undefined ? { checkOutAt: data.checkOutAt } : {}),
@@ -346,7 +366,20 @@ export class AttendanceRepository {
               ),
             }
           : {}),
-      },
+    };
+  }
+
+  updateAttendance(id: string, data: UpdateAttendanceInput & {
+    status?: AttendanceStatus;
+    workMinutes?: number;
+    overtimeMinutes?: number;
+    lateMinutes?: number;
+    checkInIp?: string | null;
+    checkOutIp?: string | null;
+  }) {
+    return prisma.attendanceRecord.update({
+      where: { id },
+      data: this.buildAttendanceUpdate(data),
       include: attendanceInclude,
     });
   }
@@ -384,19 +417,29 @@ export class AttendanceRepository {
     });
   }
 
-  listOvertime(companyId: string, status?: OvertimeStatus) {
-    return prisma.overtimeRequest.findMany({
-      where: {
-        companyId,
-        ...notDeleted,
-        ...(status ? { status } : {}),
-      },
-      include: {
-        employee: { select: employeeSelect },
-        attendance: { select: { id: true, date: true, status: true } },
-      },
-      orderBy: [{ status: 'asc' }, { date: 'desc' }],
-    });
+  listOvertime(
+    companyId: string,
+    query: { status?: OvertimeStatus; employeeId?: string; page: number; pageSize: number },
+  ) {
+    const where = {
+      companyId,
+      ...notDeleted,
+      ...(query.employeeId ? { employeeId: query.employeeId } : {}),
+      ...(query.status ? { status: query.status } : {}),
+    };
+    return Promise.all([
+      prisma.overtimeRequest.findMany({
+        where,
+        include: {
+          employee: { select: employeeSelect },
+          attendance: { select: { id: true, date: true, status: true } },
+        },
+        orderBy: [{ status: 'asc' }, { date: 'desc' }],
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+      }),
+      prisma.overtimeRequest.count({ where }),
+    ]);
   }
 
   findOvertime(companyId: string, id: string) {
@@ -429,20 +472,24 @@ export class AttendanceRepository {
     });
   }
 
-  reviewOvertime(
+  async reviewOvertime(
     id: string,
     status: OvertimeStatus,
     reviewedBy: string,
     reviewNotes?: string | null,
   ) {
-    return prisma.overtimeRequest.update({
-      where: { id },
+    const result = await prisma.overtimeRequest.updateMany({
+      where: { id, status: 'PENDING', ...notDeleted },
       data: {
         status,
         reviewedBy,
         reviewedAt: new Date(),
         reviewNotes: reviewNotes ?? null,
       },
+    });
+    if (result.count === 0) return null;
+    return prisma.overtimeRequest.findUnique({
+      where: { id },
       include: {
         employee: { select: employeeSelect },
         attendance: { select: { id: true, date: true, status: true } },

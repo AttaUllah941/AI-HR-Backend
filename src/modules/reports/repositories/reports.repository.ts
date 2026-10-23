@@ -93,13 +93,13 @@ export class ReportsRepository {
 
   // —— Attendance ——
 
-  attendanceByStatus(companyId: string, from: Date, to: Date, departmentId?: string) {
+  attendanceByStatus(companyId: string, from: Date, toEnd: Date, departmentId?: string) {
     return prisma.attendanceRecord.groupBy({
       by: ['status'],
       where: {
         companyId,
         ...notDeleted,
-        date: { gte: from, lte: to },
+        date: { gte: from, lte: toEnd },
         ...(departmentId
           ? { employee: { departmentId, deletedAt: null } }
           : {}),
@@ -109,13 +109,13 @@ export class ReportsRepository {
     });
   }
 
-  attendanceDailyTrend(companyId: string, from: Date, to: Date, departmentId?: string) {
+  attendanceDailyTrend(companyId: string, from: Date, toEnd: Date, departmentId?: string) {
     return prisma.attendanceRecord.groupBy({
       by: ['date', 'status'],
       where: {
         companyId,
         ...notDeleted,
-        date: { gte: from, lte: to },
+        date: { gte: from, lte: toEnd },
         ...(departmentId
           ? { employee: { departmentId, deletedAt: null } }
           : {}),
@@ -172,33 +172,62 @@ export class ReportsRepository {
 
   // —— Payroll ——
 
-  payrollRunStatusCounts(companyId: string, year: number) {
+  payrollRunStatusCounts(companyId: string, year: number, month?: number) {
     return prisma.payrollRun.groupBy({
       by: ['status'],
-      where: { companyId, ...notDeleted, year },
+      where: {
+        companyId,
+        ...notDeleted,
+        year,
+        ...(month ? { month } : {}),
+      },
       _count: { _all: true },
     });
   }
 
-  payrollMonthRuns(companyId: string, year: number) {
-    return prisma.payrollRun.findMany({
-      where: { companyId, ...notDeleted, year },
-      orderBy: [{ month: 'asc' }, { createdAt: 'asc' }],
-      select: {
-        id: true,
-        month: true,
-        status: true,
-        title: true,
-        entries: {
-          select: {
+  payrollMonthRuns(companyId: string, year: number, month?: number) {
+    return prisma.payrollRun
+      .findMany({
+        where: {
+          companyId,
+          ...notDeleted,
+          year,
+          ...(month ? { month } : {}),
+        },
+        orderBy: [{ month: 'asc' }, { createdAt: 'asc' }],
+        select: {
+          id: true,
+          month: true,
+          status: true,
+          title: true,
+        },
+      })
+      .then(async (runs) => {
+        if (!runs.length) return [];
+        const sums = await prisma.payrollEntry.groupBy({
+          by: ['payrollRunId'],
+          where: { payrollRunId: { in: runs.map((r) => r.id) } },
+          _sum: {
             grossPay: true,
             netPay: true,
             totalTax: true,
             totalDeductions: true,
           },
-        },
-      },
-    });
+          _count: { _all: true },
+        });
+        const byRun = new Map(sums.map((row) => [row.payrollRunId, row]));
+        return runs.map((run) => {
+          const agg = byRun.get(run.id);
+          return {
+            ...run,
+            entryCount: agg?._count._all ?? 0,
+            grossPay: agg?._sum.grossPay ?? 0,
+            netPay: agg?._sum.netPay ?? 0,
+            totalTax: agg?._sum.totalTax ?? 0,
+            totalDeductions: agg?._sum.totalDeductions ?? 0,
+          };
+        });
+      });
   }
 
   // —— Recruitment ——
@@ -361,30 +390,31 @@ export class ReportsRepository {
       points.push({ year, month, from, to });
     }
     return Promise.all(
-      points.map(async (p) => ({
-        year: p.year,
-        month: p.month,
-        hired: await prisma.employee.count({
-          where: {
-            companyId,
-            ...notDeleted,
-            joinDate: { gte: p.from, lte: p.to },
-          },
-        }),
-        active: await prisma.employee.count({
-          where: {
-            companyId,
-            ...notDeleted,
-            status: 'ACTIVE',
-            OR: [{ joinDate: null }, { joinDate: { lte: p.to } }],
-            AND: [
-              {
-                OR: [{ exitDate: null }, { exitDate: { gt: p.to } }],
-              },
-            ],
-          },
-        }),
-      })),
+      points.map(async (p) => {
+        const [hired, active] = await Promise.all([
+          prisma.employee.count({
+            where: {
+              companyId,
+              ...notDeleted,
+              joinDate: { gte: p.from, lte: p.to },
+            },
+          }),
+          prisma.employee.count({
+            where: {
+              companyId,
+              ...notDeleted,
+              status: 'ACTIVE',
+              OR: [{ joinDate: null }, { joinDate: { lte: p.to } }],
+              AND: [
+                {
+                  OR: [{ exitDate: null }, { exitDate: { gt: p.to } }],
+                },
+              ],
+            },
+          }),
+        ]);
+        return { year: p.year, month: p.month, hired, active };
+      }),
     );
   }
 

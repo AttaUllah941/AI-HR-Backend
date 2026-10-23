@@ -127,7 +127,20 @@ export class SettingsRepository {
   findRolesByCodes(codes: string[]) {
     return prisma.role.findMany({
       where: { code: { in: codes } },
-      select: { id: true, code: true, name: true },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        rolePermissions: { select: { permission: { select: { code: true } } } },
+      },
+    });
+  }
+
+  /** Revokes every active session of a user (used on suspension, deletion and role changes). */
+  revokeUserSessions(userId: string) {
+    return prisma.session.updateMany({
+      where: { userId, status: 'ACTIVE' },
+      data: { status: 'REVOKED', revokedAt: new Date() },
     });
   }
 

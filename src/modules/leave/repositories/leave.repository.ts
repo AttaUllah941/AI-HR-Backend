@@ -181,19 +181,29 @@ export class LeaveRepository {
   }
 
   // —— Balances ——
-  listBalances(companyId: string, year: number, employeeId?: string) {
-    return prisma.leaveBalance.findMany({
-      where: {
-        companyId,
-        year,
-        ...(employeeId ? { employeeId } : {}),
-      },
-      include: {
-        employee: { select: employeeSelect },
-        leaveType: { select: leaveTypeSelect },
-      },
-      orderBy: [{ employee: { firstName: 'asc' } }, { leaveType: { name: 'asc' } }],
-    });
+  listBalances(
+    companyId: string,
+    year: number,
+    query: { employeeId?: string; page: number; pageSize: number },
+  ) {
+    const where = {
+      companyId,
+      year,
+      ...(query.employeeId ? { employeeId: query.employeeId } : {}),
+    };
+    return Promise.all([
+      prisma.leaveBalance.findMany({
+        where,
+        include: {
+          employee: { select: employeeSelect },
+          leaveType: { select: leaveTypeSelect },
+        },
+        orderBy: [{ employee: { firstName: 'asc' } }, { leaveType: { name: 'asc' } }],
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+      }),
+      prisma.leaveBalance.count({ where }),
+    ]);
   }
 
   findBalance(
@@ -234,6 +244,20 @@ export class LeaveRepository {
         leaveType: { select: leaveTypeSelect },
       },
     });
+  }
+
+  /**
+   * Atomically reserves `days` as pending only while pending + used + days stays within
+   * entitled + carriedForward. Returns false when the balance is insufficient.
+   */
+  async reserveBalance(id: string, days: number, db: DbClient = prisma): Promise<boolean> {
+    const updated = await db.$executeRaw`
+      UPDATE "leave_balances"
+      SET "pending" = "pending" + ${days}, "updatedAt" = NOW()
+      WHERE "id" = ${id}
+        AND ("pending" + "used" + ${days}) <= ("entitled" + "carriedForward")
+    `;
+    return updated > 0;
   }
 
   adjustBalancePending(id: string, delta: number, db: DbClient = prisma) {
@@ -307,7 +331,7 @@ export class LeaveRepository {
     excludeId?: string,
     db: DbClient = prisma,
   ) {
-    return db.leaveRequest.findFirst({
+    return db.leaveRequest.findMany({
       where: {
         companyId,
         employeeId,
@@ -360,7 +384,51 @@ export class LeaveRepository {
   ) {
     return db.leaveRequest.update({
       where: { id },
-      data: {
+      data: this.buildRequestUpdate(data),
+      include: requestInclude,
+    });
+  }
+
+  /** Updates the request only while its status is one of `fromStatuses`; returns the affected count. */
+  async updateRequestIf(
+    id: string,
+    companyId: string,
+    fromStatuses: LeaveRequestStatus[],
+    data: UpdateLeaveRequestInput & {
+      days?: number;
+      dayType?: LeaveDayType;
+      status?: LeaveRequestStatus;
+      reviewedBy?: string | null;
+      reviewedAt?: Date | null;
+      reviewNotes?: string | null;
+    },
+    db: DbClient = prisma,
+  ): Promise<number> {
+    const result = await db.leaveRequest.updateMany({
+      where: { id, companyId, ...notDeleted, status: { in: fromStatuses } },
+      data: this.buildRequestUpdate(data),
+    });
+    return result.count;
+  }
+
+  findEmployeeManagerId(companyId: string, employeeId: string) {
+    return prisma.employee.findFirst({
+      where: { id: employeeId, companyId, ...notDeleted },
+      select: { managerId: true },
+    });
+  }
+
+  private buildRequestUpdate(
+    data: UpdateLeaveRequestInput & {
+      days?: number;
+      dayType?: LeaveDayType;
+      status?: LeaveRequestStatus;
+      reviewedBy?: string | null;
+      reviewedAt?: Date | null;
+      reviewNotes?: string | null;
+    },
+  ) {
+    return {
         ...(data.leaveTypeId !== undefined ? { leaveTypeId: data.leaveTypeId } : {}),
         ...(data.startDate !== undefined ? { startDate: data.startDate } : {}),
         ...(data.endDate !== undefined ? { endDate: data.endDate } : {}),
@@ -371,9 +439,7 @@ export class LeaveRepository {
         ...(data.reviewedBy !== undefined ? { reviewedBy: data.reviewedBy } : {}),
         ...(data.reviewedAt !== undefined ? { reviewedAt: data.reviewedAt } : {}),
         ...(data.reviewNotes !== undefined ? { reviewNotes: data.reviewNotes } : {}),
-      },
-      include: requestInclude,
-    });
+    };
   }
 
   listCalendar(companyId: string, from: Date, to: Date, employeeId?: string) {

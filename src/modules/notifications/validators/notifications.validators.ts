@@ -59,8 +59,42 @@ export const registerDeviceSchema = z.object({
   label: z.string().max(120).optional().nullable(),
 });
 
+const emptyToUndefined = (value: unknown) =>
+  value === '' || value === null || value === undefined ? undefined : value;
+
+const optionalEnum = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess(emptyToUndefined, schema.optional());
+
+const optionalBool = z.preprocess((value) => {
+  if (value === '' || value === null || value === undefined) return undefined;
+  if (value === true || value === 'true' || value === '1') return true;
+  if (value === false || value === 'false' || value === '0') return false;
+  return value;
+}, z.boolean().optional());
+
+export const feedQuerySchema = z.object({
+  limit: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(1).max(20).optional(),
+  ),
+});
+
+export const listNotificationsQuerySchema = z.object({
+  category: optionalEnum(notificationCategorySchema),
+  channel: optionalEnum(notificationChannelSchema),
+  status: optionalEnum(notificationStatusSchema),
+  unreadOnly: optionalBool,
+  page: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).optional()),
+  pageSize: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(1).max(100).optional(),
+  ),
+});
+
 export type SendNotificationInput = z.infer<typeof sendNotificationSchema>;
 export type CreateTemplateInput = z.infer<typeof createTemplateSchema>;
 export type UpdateTemplateInput = z.infer<typeof updateTemplateSchema>;
 export type UpsertPreferencesInput = z.infer<typeof upsertPreferencesSchema>;
 export type RegisterDeviceInput = z.infer<typeof registerDeviceSchema>;
+export type FeedQueryInput = z.infer<typeof feedQuerySchema>;
+export type ListNotificationsQueryInput = z.infer<typeof listNotificationsQuerySchema>;

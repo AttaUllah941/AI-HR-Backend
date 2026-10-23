@@ -144,7 +144,7 @@ export class MockAiProvider implements AiProvider {
 
     // HR Assistant default
     if (!user) {
-      return 'Hi, I am Nova — your Zenith HR assistant. Ask me about leave, attendance, payroll, recruitment, or performance.';
+      return 'Hi, I am Nova — your HR assistant. Ask me about leave, attendance, payroll, recruitment, or performance.';
     }
 
     if (lowerUser.includes('leave')) {
@@ -160,6 +160,6 @@ export class MockAiProvider implements AiProvider {
       return 'Performance reviews and goals are under Performance. I can generate an appraisal draft from an employee review once you open AI → Appraisals.';
     }
 
-    return `Thanks for your question. Based on Zenith HR practices: clarify the process owner, check the relevant module screen, and document decisions in audit logs. You asked: "${user.slice(0, 240)}". I can expand into a checklist or draft policy if you specify the topic.`;
+    return `Thanks for your question. Based on HR best practices: clarify the process owner, check the relevant module screen, and document decisions in audit logs. You asked: "${user.slice(0, 240)}". I can expand into a checklist or draft policy if you specify the topic.`;
   }
 }

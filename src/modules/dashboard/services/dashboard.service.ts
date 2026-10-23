@@ -1,3 +1,4 @@
+import { logger } from '../../../config/logger.js';
 import { DashboardRepository } from '../repositories/dashboard.repository.js';
 import { NotificationsService } from '../../notifications/services/notifications.service.js';
 
@@ -42,6 +43,21 @@ export class DashboardService {
     private readonly notifications = new NotificationsService(),
   ) {}
 
+  async getGreeting(user: { id: string; email: string; firstName?: string }) {
+    const company = await this.repo.findUserCompany(user.id);
+    const now = new Date();
+    const firstName = user.firstName || user.email.split('@')[0] || 'there';
+    return {
+      greeting: {
+        firstName,
+        message: greetingMessage(firstName, now),
+        period: greetingPeriod(now),
+        date: now.toISOString(),
+      },
+      company: company ?? { id: null, name: 'Your company' },
+    };
+  }
+
   async getSummary(user: {
     id: string;
     email: string;
@@ -49,63 +65,204 @@ export class DashboardService {
     lastName?: string;
     permissions: string[];
   }) {
-    const [activeUsers, activeSessions, orgCounts, company] = await Promise.all([
-      this.repo.countUsers({ status: 'ACTIVE' }),
-      this.repo.countActiveSessions(),
-      this.repo.organizationCountsForUser(user.id),
-      this.repo.findUserCompany(user.id),
-    ]);
-
-    const employeeCounts = company?.id
-      ? await this.repo.employeeCountsForCompany(company.id)
-      : { total: 0, active: 0, departmentBreakdown: [] as Array<{ name: string; count: number }> };
-
     const now = new Date();
     const firstName = user.firstName || user.email.split('@')[0];
+    const can = (permission: string) => user.permissions.includes(permission);
+    const company = await this.repo.findUserCompany(user.id);
+    const companyId = company?.id ?? null;
 
-    const totalEmployees = employeeCounts.total > 0 ? employeeCounts.total : Math.max(1284, activeUsers + orgCounts.departments * 120 + orgCounts.teams * 40);
-    const presentToday = employeeCounts.active > 0 ? Math.round(employeeCounts.active * 0.89) : Math.round(totalEmployees * 0.89);
-    const absentToday = Math.round(totalEmployees * 0.037);
-    const lateToday = Math.round(totalEmployees * 0.018);
+    // Each section is only computed and returned when the caller holds the matching permission.
+    const modules = {
+      organization: can('dashboard:view'),
+      employees: can('employees:view'),
+      attendance: can('attendance:view'),
+      leave: can('leave:view'),
+      payroll: can('payroll:view'),
+      recruitment: can('recruitment:view'),
+      performance: can('performance:view'),
+      ai: can('ai:view'),
+    };
 
-    const departmentSlices =
-      employeeCounts.departmentBreakdown.length > 0
-        ? employeeCounts.departmentBreakdown.map((row, index) => ({
-            label: row.name,
-            value: row.count,
-            color: DEPARTMENT_COLORS[index % DEPARTMENT_COLORS.length],
-          }))
-        : orgCounts.departmentBreakdown.length > 0
-          ? orgCounts.departmentBreakdown.map((row, index) => ({
-              label: row.name,
-              value: Math.max(1, Math.round(totalEmployees * (0.12 + index * 0.04))),
-              color: DEPARTMENT_COLORS[index % DEPARTMENT_COLORS.length],
-            }))
-          : [
-            { label: 'Engineering', value: 412, color: '#3b82f6' },
-            { label: 'Marketing', value: 156, color: '#22c55e' },
-            { label: 'Support', value: 142, color: '#ef4444' },
-            { label: 'Sales', value: 218, color: '#60a5fa' },
-            { label: 'Ops', value: 184, color: '#f59e0b' },
-          ];
+    const todayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const weekStart = new Date(todayUtc);
+    weekStart.setUTCDate(weekStart.getUTCDate() - 6);
+    const growthStart = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
 
+    const skip = Promise.resolve(null);
+    const [
+      activeUsers,
+      totalUsers,
+      activeSessions,
+      orgCounts,
+      employeeCounts,
+      attendanceRows,
+      pendingLeave,
+      payrollRun,
+      openPositions,
+      applicationRows,
+      avgRating,
+      joins,
+    ] = await Promise.all([
+      companyId ? this.repo.countUsers(companyId, { status: 'ACTIVE' }) : 0,
+      companyId ? this.repo.countUsers(companyId) : 0,
+      companyId ? this.repo.countActiveSessions(companyId) : 0,
+      this.repo.organizationCountsForUser(user.id),
+      companyId && modules.employees ? this.repo.employeeCountsForCompany(companyId) : skip,
+      companyId && modules.attendance ? this.repo.attendanceByDay(companyId, weekStart, todayUtc) : skip,
+      companyId && modules.leave ? this.repo.countPendingLeave(companyId) : skip,
+      companyId && modules.payroll ? this.repo.latestPayrollRun(companyId) : skip,
+      companyId && modules.recruitment ? this.repo.countOpenPositions(companyId) : skip,
+      companyId && modules.recruitment ? this.repo.applicationsByStatus(companyId) : skip,
+      companyId && modules.performance ? this.repo.averageReviewRating(companyId) : skip,
+      companyId && modules.employees ? this.repo.employeeJoinDates(companyId, growthStart) : skip,
+    ]);
+
+    const presentStatuses = new Set(['PRESENT', 'LATE', 'REMOTE', 'HALF_DAY', 'EARLY_LEAVE']);
+    const dayKey = (d: Date) => d.toISOString().slice(0, 10);
+    const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const trendDays: Date[] = [];
+    for (let i = 0; i < 7; i += 1) {
+      const d = new Date(weekStart);
+      d.setUTCDate(weekStart.getUTCDate() + i);
+      trendDays.push(d);
+    }
+    const dayTotals = new Map<string, { present: number; absent: number; late: number }>();
+    for (const row of attendanceRows ?? []) {
+      const key = dayKey(row.date);
+      const entry = dayTotals.get(key) ?? { present: 0, absent: 0, late: 0 };
+      if (presentStatuses.has(row.status)) entry.present += row.count;
+      if (row.status === 'ABSENT') entry.absent += row.count;
+      if (row.status === 'LATE') entry.late += row.count;
+      dayTotals.set(key, entry);
+    }
+    const attendanceTrend = trendDays.map((d) => ({
+      label: weekDays[d.getUTCDay()]!,
+      present: dayTotals.get(dayKey(d))?.present ?? 0,
+      absent: dayTotals.get(dayKey(d))?.absent ?? 0,
+    }));
+    const today = dayTotals.get(dayKey(todayUtc)) ?? { present: 0, absent: 0, late: 0 };
+
+    const departmentSlices = (employeeCounts?.departmentBreakdown ?? []).map((row, index) => ({
+      label: row.name,
+      value: row.count,
+      color: DEPARTMENT_COLORS[index % DEPARTMENT_COLORS.length]!,
+    }));
     const departmentTotal = departmentSlices.reduce((sum, slice) => sum + slice.value, 0);
 
-    const weekDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const presentSeries = [1195, 1201, 1198, 1205, 1188, 980, 850];
-    const absentSeries = [42, 38, 40, 37, 45, 52, 48];
-    const attendanceTrend = weekDays.map((label, index) => ({
-      label,
-      present: presentSeries[index] ?? presentToday,
-      absent: absentSeries[index] ?? absentToday,
-    }));
+    const monthLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const monthlyJoins = new Array<number>(12).fill(0);
+    for (const date of joins?.joinDates ?? []) {
+      monthlyJoins[date.getUTCMonth()] = (monthlyJoins[date.getUTCMonth()] ?? 0) + 1;
+    }
+    let running = joins?.before ?? 0;
+    const employeeGrowth = modules.employees
+      ? monthLabels.slice(0, now.getUTCMonth() + 1).map((label, index) => {
+          running += monthlyJoins[index] ?? 0;
+          return { label, value: running };
+        })
+      : [];
 
-    const growthMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep'];
-    const growthValues = [1150, 1168, 1185, 1198, 1210, 1225, 1240, 1270, 1304];
-    const employeeGrowth = growthMonths.map((label, index) => ({
-      label,
-      value: growthValues[index] ?? 1150 + index * 18,
-    }));
+    const appCount = new Map((applicationRows ?? []).map((r) => [r.status, r.count]));
+    const countOf = (status: string) => appCount.get(status) ?? 0;
+    // Cumulative funnel: each stage counts applications that reached it or later.
+    const hired = countOf('HIRED');
+    const offer = countOf('OFFER') + hired;
+    const interview = countOf('INTERVIEW') + offer;
+    const screening = countOf('SCREENING') + interview;
+    const applied = countOf('APPLIED') + screening;
+    const hiringStages = modules.recruitment
+      ? [
+          { label: 'Applied', value: applied },
+          { label: 'Screening', value: screening },
+          { label: 'Interview', value: interview },
+          { label: 'Offer', value: offer },
+          { label: 'Hired', value: hired },
+        ]
+      : [];
+
+    const kpis: Array<Record<string, unknown>> = [];
+    if (employeeCounts) {
+      kpis.push({
+        key: 'total_employees',
+        label: 'Total Employees',
+        value: employeeCounts.total,
+        subValue: `${employeeCounts.active} active`,
+        icon: 'groups',
+        tone: 'primary',
+      });
+    }
+    if (attendanceRows) {
+      const base = employeeCounts?.active ?? 0;
+      kpis.push(
+        {
+          key: 'present_today',
+          label: 'Present Today',
+          value: today.present,
+          trend:
+            base > 0
+              ? { value: `${Math.round((today.present / base) * 100)}%`, direction: 'neutral' as const, positive: true }
+              : undefined,
+          icon: 'how_to_reg',
+          tone: 'success',
+        },
+        { key: 'absent', label: 'Absent', value: today.absent, icon: 'person_off', tone: 'danger' },
+        { key: 'late', label: 'Late', value: today.late, icon: 'schedule', tone: 'warning' },
+      );
+    }
+    if (openPositions !== null) {
+      kpis.push({ key: 'open_positions', label: 'Open Positions', value: openPositions, icon: 'work_outline', tone: 'info' });
+    }
+    if (pendingLeave !== null) {
+      kpis.push({ key: 'pending_leave', label: 'Pending Leave', value: pendingLeave, icon: 'event_available', tone: 'warning' });
+    }
+    if (modules.payroll) {
+      const period = payrollRun
+        ? new Date(Date.UTC(payrollRun.year, payrollRun.month - 1, 1)).toLocaleString('en-US', {
+            month: 'short',
+            timeZone: 'UTC',
+          })
+        : now.toLocaleString('en-US', { month: 'short' });
+      kpis.push({
+        key: 'payroll_status',
+        label: 'Payroll Status',
+        value: payrollRun ? payrollRun.status : 'No run',
+        trend: { value: period, direction: 'neutral' as const, positive: true },
+        icon: 'payments',
+        tone: 'success',
+      });
+    }
+    if (modules.performance) {
+      kpis.push({
+        key: 'performance_score',
+        label: 'Perf. Score',
+        value: avgRating === null ? null : Math.round(avgRating * 10) / 10,
+        icon: 'grade',
+        tone: 'secondary',
+      });
+    }
+
+    const insightItems: Array<{ prefix: string; highlight: string; suffix: string }> = [];
+    if (attendanceRows && employeeCounts && employeeCounts.active > 0) {
+      insightItems.push({
+        prefix: 'Attendance today: ',
+        highlight: `${today.present} of ${employeeCounts.active}`,
+        suffix: ' active employees are present.',
+      });
+    }
+    if (pendingLeave) {
+      insightItems.push({
+        prefix: '',
+        highlight: `${pendingLeave} leave request${pendingLeave === 1 ? '' : 's'}`,
+        suffix: ' awaiting review.',
+      });
+    }
+    if (openPositions) {
+      insightItems.push({
+        prefix: '',
+        highlight: `${openPositions} open position${openPositions === 1 ? '' : 's'}`,
+        suffix: ' currently hiring.',
+      });
+    }
 
     return {
       greeting: {
@@ -114,150 +271,49 @@ export class DashboardService {
         period: greetingPeriod(now),
         date: now.toISOString(),
       },
-      company: company ?? { id: null, name: 'Zenith Enterprises' },
-      previewMode: true,
-      kpis: [
-        {
-          key: 'total_employees',
-          label: 'Total Employees',
-          value: totalEmployees,
-          trend: { value: '+12', direction: 'up' as const, positive: true },
-          icon: 'groups',
-          tone: 'primary',
-        },
-        {
-          key: 'present_today',
-          label: 'Present Today',
-          value: presentToday,
-          trend: { value: '89%', direction: 'up' as const, positive: true },
-          icon: 'how_to_reg',
-          tone: 'success',
-        },
-        {
-          key: 'absent',
-          label: 'Absent',
-          value: absentToday,
-          trend: { value: '-6', direction: 'down' as const, positive: true },
-          icon: 'person_off',
-          tone: 'danger',
-        },
-        {
-          key: 'late',
-          label: 'Late',
-          value: lateToday,
-          trend: { value: '+4', direction: 'up' as const, positive: false },
-          icon: 'schedule',
-          tone: 'warning',
-        },
-        {
-          key: 'open_positions',
-          label: 'Open Positions',
-          value: 17,
-          trend: { value: '+3', direction: 'up' as const, positive: true },
-          icon: 'work_outline',
-          tone: 'info',
-        },
-        {
-          key: 'pending_leave',
-          label: 'Pending Leave',
-          value: 9,
-          trend: { value: '-2', direction: 'down' as const, positive: true },
-          icon: 'event_available',
-          tone: 'warning',
-        },
-        {
-          key: 'payroll_status',
-          label: 'Payroll Status',
-          value: 'Ready',
-          trend: {
-            value: now.toLocaleString('en-US', { month: 'short' }),
-            direction: 'neutral' as const,
-            positive: true,
-          },
-          icon: 'payments',
-          tone: 'success',
-        },
-        {
-          key: 'performance_score',
-          label: 'Perf. Score',
-          value: 4.3,
-          trend: { value: '+0.2', direction: 'up' as const, positive: true },
-          icon: 'grade',
-          tone: 'secondary',
-        },
-      ],
+      company: company ?? { id: null, name: 'Your company' },
+      previewMode: false,
+      kpis,
       aiInsights: {
         title: 'AI Insights for this week',
-        live: true,
-        items: [
-          {
-            prefix: 'Attendance dropped ',
-            highlight: '6%',
-            suffix: ' this week — highest impact in Support team.',
-          },
-          {
-            prefix: 'Marketing has the highest overtime — ',
-            highlight: '142 hrs',
-            suffix: ' above baseline.',
-          },
-          {
-            prefix: '',
-            highlight: '3 employees',
-            suffix: ' flagged as at-risk of leaving (engagement + tenure signals).',
-          },
-          {
-            prefix: `${now.toLocaleString('en-US', { month: 'long' })} payroll is ready to process — `,
-            highlight: `${totalEmployees.toLocaleString('en-US')} employees, $4.82M total`,
-            suffix: '.',
-          },
-        ],
+        live: insightItems.length > 0,
+        items: insightItems,
         ctaLabel: 'Ask Nova for details',
-        ctaRoute: '/ai',
+        ctaRoute: '/ai/assistant',
       },
       attendanceTrend: {
         period: 'Last 7 days',
-        series: attendanceTrend,
+        series: modules.attendance ? attendanceTrend : [],
       },
       departmentDistribution: {
         total: departmentTotal,
         slices: departmentSlices,
       },
       hiringFunnel: {
-        period: 'Q4 pipeline',
-        stages: [
-          { label: 'Applied', value: 520 },
-          { label: 'Screening', value: 340 },
-          { label: 'Interview', value: 210 },
-          { label: 'Offer', value: 85 },
-          { label: 'Hired', value: 42 },
-        ],
+        period: 'Current pipeline',
+        stages: hiringStages,
       },
       employeeGrowth: {
         period: 'YTD',
         points: employeeGrowth,
       },
       stats: {
-        totalUsers: await this.repo.countUsers(),
+        totalUsers,
         activeUsers,
         activeSessions,
         departments: orgCounts.departments,
         teams: orgCounts.teams,
       },
-      modules: {
-        organization: true,
-        employees: true,
-        attendance: true,
-        leave: true,
-        payroll: false,
-        recruitment: false,
-        performance: false,
-        ai: false,
-      },
+      modules,
     };
   }
 
-  async getActivity(limit = 12) {
-    const rows = await this.repo.recentAuditLogs(Math.min(Math.max(limit, 1), 50));
+  async getActivity(userId: string, limit = 12) {
+    const company = await this.repo.findUserCompany(userId);
+    if (!company?.id) {
+      return { items: [] };
+    }
+    const rows = await this.repo.recentAuditLogs(company.id, Math.min(Math.max(limit, 1), 50));
     return {
       items: rows.map((row) => ({
         id: row.id,
@@ -280,7 +336,11 @@ export class DashboardService {
   async getNotifications(userId: string, limit = 8) {
     try {
       return await this.notifications.getFeed({ id: userId, permissions: ['notifications:view'] }, limit);
-    } catch {
+    } catch (error) {
+      logger.warn('Notifications feed unavailable; using audit-log fallback', {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       // Fallback to audit-log proxy if notifications module is unavailable for the user
       const rows = await this.repo.recentNotificationsForUser(userId, Math.min(Math.max(limit, 1), 20));
       return {

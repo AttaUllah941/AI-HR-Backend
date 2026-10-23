@@ -1,5 +1,6 @@
 import type { FileCategory, Prisma } from '@prisma/client';
 import { env } from '../../../config/env.js';
+import { logger } from '../../../config/logger.js';
 import {
   ForbiddenError,
   NotFoundError,
@@ -10,8 +11,9 @@ import {
   localFileStorage,
 } from '../../../services/storage/local-file-storage.js';
 import { FilesRepository } from '../repositories/files.repository.js';
-import type { UpdateFileInput } from '../validators/files.validators.js';
+import type { UpdateFileInput, ListFilesQueryInput } from '../validators/files.validators.js';
 import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
+import { fileCategories } from '../validators/files.validators.js';
 
 type AuthActor = { id: string; permissions: string[] };
 type RequestMeta = { ip?: string; userAgent?: string };
@@ -97,13 +99,26 @@ export class FilesService {
 
   private canBrowseCompany(actor: AuthActor) {
     return (
-      actor.permissions.includes('files:create') ||
-      actor.permissions.includes('files:update') ||
-      actor.permissions.includes('files:delete') ||
       actor.permissions.includes('employees:view') ||
       actor.permissions.includes('recruitment:view') ||
       actor.permissions.includes('settings:view')
     );
+  }
+
+  /** Attaching a file to an employee or candidate requires write access to that record type. */
+  private assertCanAttach(
+    actor: AuthActor,
+    employeeId: string | null | undefined,
+    candidateId: string | null | undefined,
+  ) {
+    if (employeeId && !actor.permissions.includes('employees:update')) {
+      throw new ForbiddenError('employees:update permission is required to attach files to an employee');
+    }
+    if (candidateId && !actor.permissions.includes('recruitment:update')) {
+      throw new ForbiddenError(
+        'recruitment:update permission is required to attach files to a candidate',
+      );
+    }
   }
 
   private async requireContext(actor: AuthActor) {
@@ -178,18 +193,12 @@ export class FilesService {
     };
   }
 
-  async list(actor: AuthActor, params: Record<string, unknown>) {
+  async list(actor: AuthActor, params: ListFilesQueryInput = {}) {
     const user = await this.requireContext(actor);
-    const { page, pageSize } = parsePagination(params);
-    const search = typeof params.search === 'string' ? params.search.trim() : undefined;
-    const category =
-      typeof params.category === 'string' && params.category
-        ? (params.category as FileCategory)
-        : undefined;
-    const employeeId =
-      typeof params.employeeId === 'string' ? params.employeeId.trim() : undefined;
-    const candidateId =
-      typeof params.candidateId === 'string' ? params.candidateId.trim() : undefined;
+    const { page, pageSize } = parsePagination({
+      page: params.page,
+      pageSize: params.pageSize,
+    });
 
     const scope = this.visibilityScope(actor, user);
     const [rows, total] = await this.repo.list(
@@ -197,10 +206,10 @@ export class FilesService {
       {
         page,
         pageSize,
-        search: search || undefined,
-        category,
-        employeeId: employeeId || undefined,
-        candidateId: candidateId || undefined,
+        search: params.search?.trim() || undefined,
+        category: params.category,
+        employeeId: params.employeeId,
+        candidateId: params.candidateId,
       },
       scope,
     );
@@ -235,20 +244,14 @@ export class FilesService {
   ) {
     const user = await this.requireContext(actor);
     const category = (input.category as FileCategory) || 'GENERAL';
-    const allowedCategories: FileCategory[] = [
-      'GENERAL',
-      'EMPLOYEE_DOCUMENT',
-      'RESUME',
-      'AVATAR',
-      'POLICY',
-      'OTHER',
-    ];
-    if (!allowedCategories.includes(category)) {
+    if (!(fileCategories as readonly string[]).includes(category)) {
       throw new ValidationError('Invalid file category');
     }
 
     let employeeId = emptyToNull(input.employeeId) ?? null;
     let candidateId = emptyToNull(input.candidateId) ?? null;
+
+    this.assertCanAttach(actor, employeeId, candidateId);
 
     if (employeeId) {
       const employee = await this.repo.findEmployee(user.companyId, employeeId);
@@ -355,6 +358,11 @@ export class FilesService {
     let candidateId =
       input.candidateId !== undefined ? emptyToNull(input.candidateId) : undefined;
 
+    // Re-linking (or unlinking) a file to an employee/candidate needs write access to that record type.
+    this.assertCanAttach(actor, employeeId, candidateId);
+    if (employeeId === null && existing.employeeId) this.assertCanAttach(actor, existing.employeeId, null);
+    if (candidateId === null && existing.candidateId) this.assertCanAttach(actor, null, existing.candidateId);
+
     if (employeeId) {
       const employee = await this.repo.findEmployee(user.companyId, employeeId);
       if (!employee) throw new ValidationError('Employee not found');
@@ -404,8 +412,13 @@ export class FilesService {
     await this.repo.softDelete(id);
     try {
       await localFileStorage.remove(existing.storageKey);
-    } catch {
-      // soft-deleted even if disk cleanup fails
+    } catch (error) {
+      // The record is already soft-deleted; surface the orphaned blob for operators.
+      logger.warn('Failed to remove stored file blob after delete', {
+        fileId: id,
+        storageKey: existing.storageKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     await this.repo.createAuditLog({

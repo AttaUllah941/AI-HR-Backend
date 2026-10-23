@@ -1,7 +1,18 @@
 import { env, isProduction } from '../config/env.js';
 import { isIpAllowed as matchIpAllowlist, isValidIpOrCidr, normalizeCidr } from './ip-matcher.js';
 
-const WEAK_SECRET_MARKERS = ['change-me', 'changeme', 'secret-min-32', 'your-secret', 'example'];
+const WEAK_SECRET_MARKERS = [
+  'change-me',
+  'changeme',
+  'secret-min-32',
+  'your-secret',
+  'example',
+  'replace-with',
+  'at-least-32',
+  'placeholder',
+  'generate-with',
+  'openssl-rand',
+];
 
 export function isWeakSecret(value: string): boolean {
   const lower = value.toLowerCase();

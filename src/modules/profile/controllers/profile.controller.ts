@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { successResponse } from '../../../interfaces/api-response.js';
 import { ProfileService } from '../services/profile.service.js';
 import type {
+  ActivityQueryInput,
   ChangePasswordInput,
   UpdatePreferencesInput,
   UpdateProfileInput,
@@ -14,7 +15,7 @@ export class ProfileController {
     return {
       id: req.user!.id,
       permissions: req.user!.permissions,
-      sessionId: (req.user as { sessionId?: string }).sessionId,
+      sessionId: req.user!.sessionId,
     };
   }
 
@@ -80,10 +81,8 @@ export class ProfileController {
   };
 
   listActivity = async (req: Request, res: Response): Promise<void> => {
-    const data = await this.service.listActivity(
-      this.actor(req),
-      req.query as Record<string, string>,
-    );
+    const query = req.query as unknown as ActivityQueryInput;
+    const data = await this.service.listActivity(this.actor(req), query);
     res.json(successResponse(data, 'Activity'));
   };
 }

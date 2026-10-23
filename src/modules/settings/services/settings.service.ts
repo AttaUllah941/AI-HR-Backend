@@ -6,11 +6,17 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../../utils/app-error.js';
+import { env, isDevelopment } from '../../../config/env.js';
+import { logger } from '../../../config/logger.js';
+import { emailService } from '../../../services/email/email.service.js';
+import { AppError } from '../../../utils/app-error.js';
 import { hashPassword } from '../../../utils/password.js';
 import { SettingsRepository } from '../repositories/settings.repository.js';
 import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import type {
   CreateUserInput,
+  ListAuditLogsQueryInput,
+  ListUsersQueryInput,
   UpdateCompanyInput,
   UpdateEmailSettingsInput,
   UpdateIntegrationsInput,
@@ -20,13 +26,29 @@ import type {
   UpdateUserInput,
 } from '../validators/settings.validators.js';
 
-type AuthActor = { id: string; permissions: string[] };
+type AuthActor = { id: string; permissions: string[]; roles: string[] };
 type RequestMeta = { ip?: string; userAgent?: string };
 
 function emptyToNull(value: string | null | undefined) {
   if (value === undefined) return undefined;
   if (value === null || value === '') return null;
   return value;
+}
+
+/** Hides credentials embedded in a relay URL (https://user:pass@host -> https://***:***@host). */
+function maskSmtpUrl(value: string | null): string | null {
+  if (!value) return value;
+  try {
+    const url = new URL(value);
+    if (url.username || url.password) {
+      url.username = '***';
+      url.password = '***';
+    }
+    url.search = '';
+    return url.toString();
+  } catch {
+    return '***';
+  }
 }
 
 function mapUser(user: {
@@ -109,8 +131,9 @@ function mapSettings(settings: {
     email: {
       provider: settings.emailProvider,
       from: settings.emailFrom,
-      smtpUrl: settings.emailSmtpUrl,
-      apiKeySet: settings.emailApiKeySet,
+      smtpUrl: maskSmtpUrl(settings.emailSmtpUrl),
+      // The API key is only ever read from the server environment (EMAIL_API_KEY).
+      apiKeySet: Boolean(env.EMAIL_API_KEY),
     },
     storage: {
       provider: settings.storageProvider,
@@ -143,6 +166,29 @@ export class SettingsService {
 
   private actorHas(actor: AuthActor, code: string) {
     return actor.permissions.includes(code);
+  }
+
+  private isSuperAdmin(actor: AuthActor) {
+    return actor.roles.includes('SUPER_ADMIN');
+  }
+
+  /** Roles an actor may assign: never SUPER_ADMIN, nor any role holding permissions the actor lacks. */
+  private assertCanAssignRoles(
+    actor: AuthActor,
+    roles: Array<{ code: string; rolePermissions: Array<{ permission: { code: string } }> }>,
+  ) {
+    if (this.isSuperAdmin(actor)) return;
+    if (roles.some((r) => r.code === 'SUPER_ADMIN')) {
+      throw new ForbiddenError('Only Super Admin can assign the Super Admin role');
+    }
+    for (const role of roles) {
+      const missing = role.rolePermissions.find((rp) => !this.actorHas(actor, rp.permission.code));
+      if (missing) {
+        throw new ForbiddenError(
+          `You cannot assign the ${role.code} role because it grants permissions you do not hold`,
+        );
+      }
+    }
   }
 
   async getSummary(actor: AuthActor) {
@@ -235,12 +281,12 @@ export class SettingsService {
     const companyId = await this.requireCompanyId(actor.id);
     await this.repo.ensureSettings(companyId);
 
-    let emailApiKeySet: boolean | undefined;
-    if (input.clearApiKey) {
-      emailApiKeySet = false;
-    } else if (input.emailApiKey !== undefined && input.emailApiKey !== null && input.emailApiKey !== '') {
-      emailApiKeySet = true;
+    if (input.emailApiKey !== undefined && input.emailApiKey !== null && input.emailApiKey !== '') {
+      throw new ValidationError(
+        'The email API key cannot be stored through settings. Set EMAIL_API_KEY in the server environment instead.',
+      );
     }
+    const emailApiKeySet: boolean | undefined = input.clearApiKey ? false : undefined;
 
     const settings = await this.repo.updateSettings(companyId, {
       ...(input.emailProvider !== undefined ? { emailProvider: input.emailProvider } : {}),
@@ -256,7 +302,7 @@ export class SettingsService {
       entityId: settings.id,
       metadata: {
         provider: settings.emailProvider,
-        apiKeySet: settings.emailApiKeySet,
+        apiKeySet: Boolean(env.EMAIL_API_KEY),
       },
       ipAddress: meta.ip,
       userAgent: meta.userAgent,
@@ -333,20 +379,18 @@ export class SettingsService {
     return mapSettings(settings);
   }
 
-  async listUsers(actor: AuthActor, params: Record<string, unknown>) {
+  async listUsers(actor: AuthActor, params: ListUsersQueryInput = {}) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePagination(params);
-    const search = typeof params.search === 'string' ? params.search.trim() : undefined;
-    const status =
-      typeof params.status === 'string' && params.status
-        ? (params.status as UserStatus)
-        : undefined;
+    const { page, pageSize } = parsePagination({
+      page: params.page,
+      pageSize: params.pageSize,
+    });
 
     const [rows, total] = await this.repo.listUsers(companyId, {
       page,
       pageSize,
-      search: search || undefined,
-      status,
+      search: params.search?.trim() || undefined,
+      status: params.status,
     });
 
     return {
@@ -367,12 +411,7 @@ export class SettingsService {
       throw new ValidationError('One or more roles were not found');
     }
 
-    if (
-      roles.some((r) => r.code === 'SUPER_ADMIN') &&
-      !this.actorHas(actor, 'roles:manage')
-    ) {
-      throw new ForbiddenError('Only Super Admin can assign the Super Admin role');
-    }
+    this.assertCanAssignRoles(actor, roles);
 
     const temporaryPassword =
       input.temporaryPassword ?? `Tmp${randomBytes(4).toString('hex')}A1!`;
@@ -399,9 +438,38 @@ export class SettingsService {
       userAgent: meta.userAgent,
     });
 
+    // A generated password is only returned in the response for local development with the
+    // console email provider; otherwise it is delivered by email and never echoed back.
+    let generatedPasswordForResponse: string | undefined;
+    if (!input.temporaryPassword) {
+      if (isDevelopment && emailService.providerName === 'console') {
+        generatedPasswordForResponse = temporaryPassword;
+      } else {
+        try {
+          await emailService.send({
+            to: user.email,
+            subject: 'Your account has been created',
+            text: `An account was created for you.\n\nSign in: ${emailService.buildAppLink('/auth/login')}\nTemporary password: ${temporaryPassword}\n\nYou will be asked to change it after signing in.`,
+          });
+        } catch (error) {
+          logger.error('Failed to email temporary password', {
+            userId: user.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          await this.repo.softDeleteUser(user.id);
+          throw new AppError(
+            'The user could not be created because the credentials email failed to send',
+            502,
+            'EMAIL_DELIVERY_FAILED',
+          );
+        }
+      }
+    }
+
     return {
       user: mapUser(user),
-      temporaryPassword: input.temporaryPassword ? undefined : temporaryPassword,
+      temporaryPassword: generatedPasswordForResponse,
+      temporaryPasswordEmailed: !input.temporaryPassword && !generatedPasswordForResponse,
     };
   }
 
@@ -412,18 +480,25 @@ export class SettingsService {
       throw new NotFoundError('User not found');
     }
 
+    const targetIsSuperAdmin = existing.userRoles.some((ur) => ur.role.code === 'SUPER_ADMIN');
+    if (
+      targetIsSuperAdmin &&
+      !this.isSuperAdmin(actor) &&
+      (input.roleCodes !== undefined || input.status !== undefined)
+    ) {
+      throw new ForbiddenError('Only Super Admin can change the status or roles of a Super Admin');
+    }
+    if (userId === actor.id && input.roleCodes !== undefined) {
+      throw new ForbiddenError('You cannot change your own roles');
+    }
+
     let roleIds: string[] | undefined;
     if (input.roleCodes) {
       const roles = await this.repo.findRolesByCodes(input.roleCodes);
       if (roles.length !== input.roleCodes.length) {
         throw new ValidationError('One or more roles were not found');
       }
-      if (
-        roles.some((r) => r.code === 'SUPER_ADMIN') &&
-        !this.actorHas(actor, 'roles:manage')
-      ) {
-        throw new ForbiddenError('Only Super Admin can assign the Super Admin role');
-      }
+      this.assertCanAssignRoles(actor, roles);
       roleIds = roles.map((r) => r.id);
     }
 
@@ -438,6 +513,10 @@ export class SettingsService {
       status: input.status,
       roleIds,
     });
+
+    if ((input.status !== undefined && input.status !== 'ACTIVE') || roleIds !== undefined) {
+      await this.repo.revokeUserSessions(userId);
+    }
 
     await this.repo.createAuditLog({
       actorId: actor.id,
@@ -468,6 +547,7 @@ export class SettingsService {
     }
 
     await this.repo.softDeleteUser(userId);
+    await this.repo.revokeUserSessions(userId);
 
     await this.repo.createAuditLog({
       actorId: actor.id,
@@ -501,6 +581,10 @@ export class SettingsService {
     meta: RequestMeta,
   ) {
     await this.requireCompanyId(actor.id);
+    // Roles are shared across all tenants, so only a Super Admin may edit them.
+    if (!this.isSuperAdmin(actor)) {
+      throw new ForbiddenError('Only Super Admin can edit role permissions');
+    }
     const role = await this.repo.findRoleById(roleId);
     if (!role) {
       throw new NotFoundError('Role not found');
@@ -544,20 +628,19 @@ export class SettingsService {
     return mapRole(updated);
   }
 
-  async listAuditLogs(actor: AuthActor, params: Record<string, unknown>) {
+  async listAuditLogs(actor: AuthActor, params: ListAuditLogsQueryInput = {}) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePagination(params);
-    const search = typeof params.search === 'string' ? params.search.trim() : undefined;
-    const entityType =
-      typeof params.entityType === 'string' ? params.entityType.trim() : undefined;
-    const actorId = typeof params.actorId === 'string' ? params.actorId.trim() : undefined;
+    const { page, pageSize } = parsePagination({
+      page: params.page,
+      pageSize: params.pageSize,
+    });
 
     const [rows, total] = await this.repo.listAuditLogs(companyId, {
       page,
       pageSize,
-      search: search || undefined,
-      entityType: entityType || undefined,
-      actorId: actorId || undefined,
+      search: params.search?.trim() || undefined,
+      entityType: params.entityType?.trim() || undefined,
+      actorId: params.actorId || undefined,
     });
 
     const items = rows.map((row) => ({

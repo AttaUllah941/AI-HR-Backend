@@ -301,6 +301,13 @@ export class RecruitmentRepository {
     return { items, total };
   }
 
+  findStoredFile(companyId: string, id: string) {
+    return prisma.storedFile.findFirst({
+      where: { id, companyId, deletedAt: null },
+      select: { id: true },
+    });
+  }
+
   findCandidate(companyId: string, id: string) {
     return prisma.candidate.findFirst({
       where: { id, companyId, ...notDeleted },
@@ -432,7 +439,7 @@ export class RecruitmentRepository {
         jobOpeningId: data.jobOpeningId,
         candidateId: data.candidateId,
         coverLetter: data.coverLetter ?? null,
-        status: data.status ?? 'APPLIED',
+        status: 'APPLIED',
       },
       include: applicationInclude,
     });
@@ -462,7 +469,7 @@ export class RecruitmentRepository {
     });
   }
 
-  listPipelineApplications(companyId: string, jobOpeningId?: string) {
+  listPipelineApplications(companyId: string, jobOpeningId?: string, take = 200) {
     return prisma.jobApplication.findMany({
       where: {
         companyId,
@@ -472,6 +479,7 @@ export class RecruitmentRepository {
       },
       include: applicationInclude,
       orderBy: [{ status: 'asc' }, { stageChangedAt: 'desc' }],
+      take,
     });
   }
 
@@ -615,7 +623,6 @@ export class RecruitmentRepository {
         ...(data.startDate !== undefined ? { startDate: data.startDate } : {}),
         ...(data.expiresAt !== undefined ? { expiresAt: data.expiresAt } : {}),
         ...(data.notes !== undefined ? { notes: data.notes } : {}),
-        ...(data.status !== undefined ? { status: data.status } : {}),
       },
       include: offerInclude,
     });

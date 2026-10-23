@@ -229,19 +229,60 @@ export class EmployeeRepository {
     });
   }
 
+  async findManagerId(id: string): Promise<string | null> {
+    const row = await prisma.employee.findFirst({
+      where: { id, ...notDeleted },
+      select: { managerId: true },
+    });
+    return row?.managerId ?? null;
+  }
+
+  /** Suspends the login linked to an employee and revokes all of its active sessions. */
+  async deactivateLinkedUser(employeeId: string): Promise<void> {
+    const employee = await prisma.employee.findUnique({
+      where: { id: employeeId },
+      select: { userId: true },
+    });
+    if (!employee?.userId) return;
+    const userId = employee.userId;
+    await prisma.$transaction([
+      prisma.user.update({ where: { id: userId }, data: { status: 'SUSPENDED' } }),
+      prisma.session.updateMany({
+        where: { userId, status: 'ACTIVE' },
+        data: { status: 'REVOKED', revokedAt: new Date() },
+      }),
+    ]);
+  }
+
   countDirectReports(employeeId: string) {
     return prisma.employee.count({ where: { managerId: employeeId, ...notDeleted } });
   }
 
   // —— Emergency contacts ——
   createEmergencyContact(employeeId: string, data: CreateEmergencyContactInput) {
-    return prisma.employeeEmergencyContact.create({
-      data: { employeeId, ...data, email: data.email ?? null },
+    return prisma.$transaction(async (tx) => {
+      if (data.isPrimary) {
+        await tx.employeeEmergencyContact.updateMany({
+          where: { employeeId, isPrimary: true, ...notDeleted },
+          data: { isPrimary: false },
+        });
+      }
+      return tx.employeeEmergencyContact.create({
+        data: { employeeId, ...data, email: data.email ?? null },
+      });
     });
   }
 
-  updateEmergencyContact(id: string, data: UpdateEmergencyContactInput) {
-    return prisma.employeeEmergencyContact.update({ where: { id }, data });
+  updateEmergencyContact(employeeId: string, id: string, data: UpdateEmergencyContactInput) {
+    return prisma.$transaction(async (tx) => {
+      if (data.isPrimary) {
+        await tx.employeeEmergencyContact.updateMany({
+          where: { employeeId, isPrimary: true, id: { not: id }, ...notDeleted },
+          data: { isPrimary: false },
+        });
+      }
+      return tx.employeeEmergencyContact.update({ where: { id }, data });
+    });
   }
 
   softDeleteEmergencyContact(id: string) {

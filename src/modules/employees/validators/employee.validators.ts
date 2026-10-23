@@ -16,6 +16,30 @@ const optionalDate = z.preprocess(
   z.coerce.date().optional().nullable(),
 );
 
+/** http(s) URLs or same-origin absolute paths (e.g. /api/v1/files/:id/download); rejects javascript:, data:, //host. */
+function isSafeUrl(value: string): boolean {
+  if (value.startsWith('/')) {
+    return !value.startsWith('//') && !value.includes('\\') && !/[\s<>"]/.test(value);
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+const optionalSafeUrl = (max: number) =>
+  z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z
+      .string()
+      .max(max)
+      .refine(isSafeUrl, 'Must be an http(s) URL or a same-origin path')
+      .optional()
+      .nullable(),
+  );
+
 const employeeStatus = z.enum([
   'DRAFT',
   'ACTIVE',
@@ -42,7 +66,7 @@ export const createEmployeeSchema = z.object({
   gender: gender.optional().nullable(),
   nationality: optionalString(100),
   maritalStatus: optionalString(50),
-  avatarUrl: optionalString(500),
+  avatarUrl: optionalSafeUrl(500),
   addressLine1: optionalString(200),
   addressLine2: optionalString(200),
   city: optionalString(100),
@@ -116,7 +140,7 @@ export const createCertificationSchema = z.object({
   credentialId: optionalString(100),
   issuedDate: optionalDate,
   expiryDate: optionalDate,
-  documentUrl: optionalString(500),
+  documentUrl: optionalSafeUrl(500),
 });
 
 export const updateCertificationSchema = createCertificationSchema.partial();
@@ -125,7 +149,7 @@ export const createDocumentSchema = z.object({
   title: z.string().min(1).max(200),
   category: z.string().min(1).max(100),
   fileName: optionalString(255),
-  fileUrl: optionalString(500),
+  fileUrl: optionalSafeUrl(500),
   mimeType: optionalString(100),
   fileSize: z.number().int().min(0).optional().nullable(),
 });

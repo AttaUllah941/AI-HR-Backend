@@ -62,9 +62,21 @@ describe('API smoke', () => {
       assert.equal(live.status, 200);
       assert.equal((live.body as { data: { status: string } }).data.status, 'ok');
 
+      const ready = await request(server, 'GET', '/api/v1/health/ready');
+      assert.ok([200, 503].includes(ready.status));
+      assert.ok(
+        ['ok', 'not_ready'].includes(
+          (ready.body as { data: { status: string } }).data.status,
+        ),
+      );
+      assert.ok(
+        ['up', 'down'].includes(
+          (ready.body as { data: { database: string } }).data.database,
+        ),
+      );
+
       const metrics = await request(server, 'GET', '/api/v1/health/metrics');
-      assert.equal(metrics.status, 200);
-      assert.ok((metrics.body as { data: { uptimeSeconds: number } }).data.uptimeSeconds >= 0);
+      assert.equal(metrics.status, 401);
 
       const missing = await request(server, 'GET', '/api/v1/this-route-does-not-exist');
       assert.equal(missing.status, 404);

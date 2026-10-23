@@ -2,10 +2,12 @@ import { Router } from 'express';
 import { asyncHandler } from '../../middleware/async-handler.js';
 import { authMiddleware } from '../../middleware/auth.middleware.js';
 import { requirePermissions } from '../../middleware/rbac.middleware.js';
-import { validateBody } from '../../middleware/validate.middleware.js';
+import { validateBody, validateQuery } from '../../middleware/validate.middleware.js';
 import { NotificationsController } from './controllers/notifications.controller.js';
 import {
   createTemplateSchema,
+  feedQuerySchema,
+  listNotificationsQuerySchema,
   registerDeviceSchema,
   sendNotificationSchema,
   updateTemplateSchema,
@@ -31,12 +33,14 @@ notificationsRouter.get(
 notificationsRouter.get(
   '/feed',
   requirePermissions('notifications:view'),
+  validateQuery(feedQuerySchema),
   asyncHandler(controller.feed),
 );
 
 notificationsRouter.get(
   '/',
   requirePermissions('notifications:view'),
+  validateQuery(listNotificationsQuerySchema),
   asyncHandler(controller.list),
 );
 notificationsRouter.post(

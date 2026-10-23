@@ -1,62 +1,30 @@
 import { prisma } from '../../../config/database.js';
 
 export class DashboardRepository {
-  countUsers(where: { status?: string; deletedAt?: null } = {}): Promise<number> {
+  countUsers(companyId: string, where: { status?: string } = {}): Promise<number> {
     return prisma.user.count({
       where: {
+        companyId,
         deletedAt: null,
         ...(where.status ? { status: where.status as never } : {}),
       },
     });
   }
 
-  countCompanies(): Promise<number> {
-    return prisma.company.count({ where: { deletedAt: null, isActive: true } });
-  }
-
-  countActiveSessions(): Promise<number> {
+  countActiveSessions(companyId: string): Promise<number> {
     return prisma.session.count({
       where: {
         status: 'ACTIVE',
         expiresAt: { gt: new Date() },
+        user: { companyId },
       },
     });
   }
 
-  countMfaEnabledUsers(): Promise<number> {
-    return prisma.user.count({
-      where: { deletedAt: null, mfaEnabled: true },
-    });
-  }
-
-  groupUsersByStatus() {
-    return prisma.user.groupBy({
-      by: ['status'],
-      where: { deletedAt: null },
-      _count: { _all: true },
-    });
-  }
-
-  async usersCreatedByMonth(months: number) {
-    const start = new Date();
-    start.setUTCDate(1);
-    start.setUTCHours(0, 0, 0, 0);
-    start.setUTCMonth(start.getUTCMonth() - (months - 1));
-
-    const users = await prisma.user.findMany({
-      where: {
-        deletedAt: null,
-        createdAt: { gte: start },
-      },
-      select: { createdAt: true },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    return { start, users };
-  }
-
-  recentAuditLogs(limit: number) {
+  // AuditLog has no companyId column; scope through the actor's company.
+  recentAuditLogs(companyId: string, limit: number) {
     return prisma.auditLog.findMany({
+      where: { actor: { companyId } },
       take: limit,
       orderBy: { createdAt: 'desc' },
       include: {
@@ -70,6 +38,61 @@ export class DashboardRepository {
         },
       },
     });
+  }
+
+  async attendanceByDay(companyId: string, from: Date, to: Date) {
+    const rows = await prisma.attendanceRecord.groupBy({
+      by: ['date', 'status'],
+      where: { companyId, deletedAt: null, date: { gte: from, lte: to } },
+      _count: { _all: true },
+    });
+    return rows.map((row) => ({ date: row.date, status: row.status as string, count: row._count._all }));
+  }
+
+  countPendingLeave(companyId: string): Promise<number> {
+    return prisma.leaveRequest.count({ where: { companyId, deletedAt: null, status: 'PENDING' } });
+  }
+
+  latestPayrollRun(companyId: string) {
+    return prisma.payrollRun.findFirst({
+      where: { companyId, deletedAt: null },
+      orderBy: [{ year: 'desc' }, { month: 'desc' }],
+      select: { year: true, month: true, status: true },
+    });
+  }
+
+  countOpenPositions(companyId: string): Promise<number> {
+    return prisma.jobOpening.count({ where: { companyId, deletedAt: null, status: 'OPEN' } });
+  }
+
+  async applicationsByStatus(companyId: string) {
+    const rows = await prisma.jobApplication.groupBy({
+      by: ['status'],
+      where: { companyId, deletedAt: null },
+      _count: { _all: true },
+    });
+    return rows.map((row) => ({ status: row.status as string, count: row._count._all }));
+  }
+
+  async averageReviewRating(companyId: string): Promise<number | null> {
+    const agg = await prisma.performanceReview.aggregate({
+      where: { companyId, deletedAt: null, overallRating: { not: null } },
+      _avg: { overallRating: true },
+    });
+    return agg._avg.overallRating ?? null;
+  }
+
+  async employeeJoinDates(companyId: string, since: Date) {
+    const [before, rows] = await Promise.all([
+      prisma.employee.count({
+        where: { companyId, deletedAt: null, joinDate: { lt: since } },
+      }),
+      prisma.employee.findMany({
+        where: { companyId, deletedAt: null, joinDate: { gte: since } },
+        select: { joinDate: true },
+      }),
+    ]);
+    return { before, joinDates: rows.map((r) => r.joinDate!).filter(Boolean) };
   }
 
   recentNotificationsForUser(userId: string, limit: number) {

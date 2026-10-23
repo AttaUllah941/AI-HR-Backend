@@ -3,6 +3,7 @@ import { successResponse } from '../../../interfaces/api-response.js';
 import { GlobalService } from '../services/global.service.js';
 import type {
   CreateBookmarkInput,
+  GlobalSearchInput,
   UpdateBookmarkInput,
 } from '../validators/global.validators.js';
 
@@ -17,19 +18,10 @@ export class GlobalController {
   }
 
   search = async (req: Request, res: Response): Promise<void> => {
-    const q = String(req.query.q ?? '');
-    const data = await this.service.search(this.actor(req), {
-      q,
-      types: typeof req.query.types === 'string' ? req.query.types : undefined,
-      page: req.query.page ? Number(req.query.page) : undefined,
-      pageSize: req.query.pageSize ? Number(req.query.pageSize) : undefined,
-      sortBy: req.query.sortBy as 'relevance' | 'title' | 'updatedAt' | 'type' | undefined,
-      sortDir: req.query.sortDir as 'asc' | 'desc' | undefined,
-      departmentId:
-        typeof req.query.departmentId === 'string' ? req.query.departmentId : undefined,
-      status: typeof req.query.status === 'string' ? req.query.status : undefined,
-      category: typeof req.query.category === 'string' ? req.query.category : undefined,
-    });
+    const data = await this.service.search(
+      this.actor(req),
+      req.query as unknown as GlobalSearchInput,
+    );
     res.json(successResponse(data, 'Search results'));
   };
 

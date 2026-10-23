@@ -93,7 +93,14 @@ export type PayrollRunListQuery = PayrollListQuery & {
   month?: number;
 };
 
+/** Payslips an employee may see: not voided and belonging to an approved or paid run. */
+const employeeVisiblePayslip = {
+  status: { not: 'VOID' as const },
+  entry: { run: { status: { in: ['APPROVED' as const, 'PAID' as const] }, deletedAt: null } },
+} satisfies Prisma.PayslipWhereInput;
+
 export type PayslipListQuery = PayrollListQuery & {
+  visibleOnly?: boolean;
   employeeId?: string;
   year?: number;
   month?: number;
@@ -101,8 +108,15 @@ export type PayslipListQuery = PayrollListQuery & {
 };
 
 export class PayrollRepository {
-  runTransaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-    return prisma.$transaction(fn);
+  runTransaction<T>(
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+    options?: { timeout?: number; maxWait?: number },
+  ): Promise<T> {
+    return prisma.$transaction(fn, options);
+  }
+
+  async countAuditByActor(action: string, entityId: string, actorId: string): Promise<number> {
+    return prisma.auditLog.count({ where: { action, entityId, actorId } });
   }
 
   findUserCompanyId(userId: string) {
@@ -314,6 +328,11 @@ export class PayrollRepository {
         isActive: true,
         effectiveFrom: { lte: periodEnd },
         OR: [{ effectiveTo: null }, { effectiveTo: { gte: periodStart } }],
+        employee: {
+          deletedAt: null,
+          isActive: true,
+          status: { notIn: ['TERMINATED', 'RESIGNED', 'INACTIVE'] },
+        },
       },
       include: {
         employee: { select: employeeSelect },
@@ -321,7 +340,7 @@ export class PayrollRepository {
           include: { component: true },
         },
       },
-      orderBy: { employeeId: 'asc' },
+      orderBy: [{ employeeId: 'asc' }, { effectiveFrom: 'desc' }, { updatedAt: 'desc' }],
     });
   }
 
@@ -423,17 +442,50 @@ export class PayrollRepository {
   ) {
     return db.payrollRun.update({
       where: { id },
-      data: {
-        ...(data.title !== undefined ? { title: data.title } : {}),
-        ...(data.notes !== undefined ? { notes: data.notes } : {}),
-        ...(data.status !== undefined ? { status: data.status } : {}),
-        ...(data.processedAt !== undefined ? { processedAt: data.processedAt } : {}),
-        ...(data.approvedAt !== undefined ? { approvedAt: data.approvedAt } : {}),
-        ...(data.approvedBy !== undefined ? { approvedBy: data.approvedBy } : {}),
-        ...(data.paidAt !== undefined ? { paidAt: data.paidAt } : {}),
-      },
+      data: this.buildRunUpdate(data),
       include: runInclude,
     });
+  }
+
+  /** Updates the run only while its status is one of `fromStatuses`; returns the affected count. */
+  async transitionRun(
+    id: string,
+    companyId: string,
+    fromStatuses: PayrollRunStatus[],
+    data: UpdatePayrollRunInput & {
+      status?: PayrollRunStatus;
+      processedAt?: Date | null;
+      approvedAt?: Date | null;
+      approvedBy?: string | null;
+      paidAt?: Date | null;
+    },
+    db: DbClient = prisma,
+  ): Promise<number> {
+    const result = await db.payrollRun.updateMany({
+      where: { id, companyId, ...notDeleted, status: { in: fromStatuses } },
+      data: this.buildRunUpdate(data),
+    });
+    return result.count;
+  }
+
+  private buildRunUpdate(
+    data: UpdatePayrollRunInput & {
+      status?: PayrollRunStatus;
+      processedAt?: Date | null;
+      approvedAt?: Date | null;
+      approvedBy?: string | null;
+      paidAt?: Date | null;
+    },
+  ) {
+    return {
+      ...(data.title !== undefined ? { title: data.title } : {}),
+      ...(data.notes !== undefined ? { notes: data.notes } : {}),
+      ...(data.status !== undefined ? { status: data.status } : {}),
+      ...(data.processedAt !== undefined ? { processedAt: data.processedAt } : {}),
+      ...(data.approvedAt !== undefined ? { approvedAt: data.approvedAt } : {}),
+      ...(data.approvedBy !== undefined ? { approvedBy: data.approvedBy } : {}),
+      ...(data.paidAt !== undefined ? { paidAt: data.paidAt } : {}),
+    };
   }
 
   deleteRunEntries(payrollRunId: string, db: DbClient = prisma) {
@@ -532,6 +584,13 @@ export class PayrollRepository {
     });
   }
 
+  voidPayslipsForRun(payrollRunId: string, db: DbClient = prisma) {
+    return db.payslip.updateMany({
+      where: { entry: { payrollRunId }, status: { not: 'PAID' } },
+      data: { status: 'VOID' },
+    });
+  }
+
   async listEntries(
     companyId: string,
     payrollRunId: string,
@@ -559,10 +618,15 @@ export class PayrollRepository {
   async listPayslips(companyId: string, query: PayslipListQuery) {
     const where: Prisma.PayslipWhereInput = {
       companyId,
+      ...(query.visibleOnly ? employeeVisiblePayslip : {}),
       ...(query.employeeId ? { employeeId: query.employeeId } : {}),
       ...(query.year ? { year: query.year } : {}),
       ...(query.month ? { month: query.month } : {}),
-      ...(query.status ? { status: query.status as never } : {}),
+      ...(query.status
+        ? query.visibleOnly
+          ? { AND: [{ status: query.status as never }] }
+          : { status: query.status as never }
+        : {}),
     };
     const [items, total] = await Promise.all([
       prisma.payslip.findMany({
@@ -594,29 +658,48 @@ export class PayrollRepository {
   }
 
   runMonthAggregates(companyId: string, year: number) {
-    return prisma.payrollRun.findMany({
-      where: { companyId, year, deletedAt: null },
-      select: {
-        id: true,
-        month: true,
-        status: true,
-        title: true,
-        entries: {
-          select: {
+    return prisma.payrollRun
+      .findMany({
+        where: { companyId, year, deletedAt: null },
+        select: {
+          id: true,
+          month: true,
+          status: true,
+          title: true,
+        },
+        orderBy: { month: 'asc' },
+      })
+      .then(async (runs) => {
+        if (!runs.length) return [];
+        const sums = await prisma.payrollEntry.groupBy({
+          by: ['payrollRunId'],
+          where: { payrollRunId: { in: runs.map((r) => r.id) } },
+          _sum: {
             grossPay: true,
             netPay: true,
             totalTax: true,
             totalDeductions: true,
           },
-        },
-      },
-      orderBy: { month: 'asc' },
-    });
+          _count: { _all: true },
+        });
+        const byRun = new Map(sums.map((row) => [row.payrollRunId, row]));
+        return runs.map((run) => {
+          const agg = byRun.get(run.id);
+          return {
+            ...run,
+            entryCount: agg?._count._all ?? 0,
+            grossPay: agg?._sum.grossPay ?? 0,
+            netPay: agg?._sum.netPay ?? 0,
+            totalTax: agg?._sum.totalTax ?? 0,
+            totalDeductions: agg?._sum.totalDeductions ?? 0,
+          };
+        });
+      });
   }
 
   payslipYtdTotals(companyId: string, employeeId: string, year: number) {
     return prisma.payslip.aggregate({
-      where: { companyId, employeeId, year, status: { in: ['GENERATED', 'PAID'] } },
+      where: { companyId, employeeId, year, ...employeeVisiblePayslip },
       _sum: {
         grossPay: true,
         netPay: true,
@@ -643,7 +726,7 @@ export class PayrollRepository {
 
   latestPayslip(companyId: string, employeeId: string) {
     return prisma.payslip.findFirst({
-      where: { companyId, employeeId },
+      where: { companyId, employeeId, ...employeeVisiblePayslip },
       include: payslipInclude,
       orderBy: [{ year: 'desc' }, { month: 'desc' }],
     });

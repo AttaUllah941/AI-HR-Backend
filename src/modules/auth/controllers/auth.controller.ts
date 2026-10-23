@@ -6,6 +6,7 @@ import type {
   LoginInput,
   MfaDisableInput,
   MfaEnableInput,
+  MfaSetupInput,
   MfaVerifyInput,
   RefreshInput,
   RegisterInput,
@@ -71,7 +72,7 @@ export class AuthController {
   };
 
   setupMfa = async (req: Request, res: Response): Promise<void> => {
-    const data = await this.service.setupMfa(req.user!.id);
+    const data = await this.service.setupMfa(req.user!.id, req.body as MfaSetupInput);
     res.json(successResponse(data, 'MFA setup started'));
   };
 

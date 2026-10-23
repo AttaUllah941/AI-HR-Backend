@@ -5,6 +5,7 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../../utils/app-error.js';
+import { parsePagination } from '../../../utils/pagination.js';
 import { EmployeeRepository, type EmployeeListQuery } from '../repositories/employee.repository.js';
 import type {
   CreateCertificationInput,
@@ -24,6 +25,19 @@ import type {
 } from '../validators/employee.validators.js';
 
 type AuthActor = { id: string; permissions: string[] };
+
+const EMPLOYEE_STATUSES = [
+  'DRAFT',
+  'ACTIVE',
+  'ON_LEAVE',
+  'PROBATION',
+  'NOTICE_PERIOD',
+  'TERMINATED',
+  'RESIGNED',
+  'INACTIVE',
+] as const;
+const SORT_FIELDS = ['firstName', 'lastName', 'employeeCode', 'joinDate', 'createdAt'] as const;
+const EXITED_STATUSES: readonly string[] = ['TERMINATED', 'RESIGNED', 'INACTIVE'];
 
 export type EmployeeListParams = {
   page?: number;
@@ -50,13 +64,17 @@ export class EmployeeService {
   }
 
   private parseListQuery(params: EmployeeListParams): EmployeeListQuery {
-    const page = Math.max(1, Number(params.page ?? 1) || 1);
-    const pageSize = Math.min(100, Math.max(1, Number(params.pageSize ?? 20) || 20));
-    const sortBy = ['firstName', 'lastName', 'employeeCode', 'joinDate', 'createdAt'].includes(
-      params.sortBy ?? '',
-    )
-      ? (params.sortBy as EmployeeListQuery['sortBy'])
-      : 'lastName';
+    const { page, pageSize } = parsePagination(params, { maxPageSize: 100 });
+    if (params.sortBy && !(SORT_FIELDS as readonly string[]).includes(params.sortBy)) {
+      throw new ValidationError(`Invalid sortBy. Allowed: ${SORT_FIELDS.join(', ')}`);
+    }
+    if (params.sortDir && params.sortDir !== 'asc' && params.sortDir !== 'desc') {
+      throw new ValidationError('Invalid sortDir. Allowed: asc, desc');
+    }
+    if (params.status && !(EMPLOYEE_STATUSES as readonly string[]).includes(params.status)) {
+      throw new ValidationError(`Invalid status. Allowed: ${EMPLOYEE_STATUSES.join(', ')}`);
+    }
+    const sortBy = (params.sortBy as EmployeeListQuery['sortBy'] | undefined) ?? 'lastName';
     const sortDir = params.sortDir === 'desc' ? 'desc' : 'asc';
     const status = params.status as EmployeeStatus | undefined;
 
@@ -157,13 +175,25 @@ export class EmployeeService {
 
   async update(actor: AuthActor, id: string, input: UpdateEmployeeInput) {
     const companyId = await this.requireCompanyId(actor.id);
-    await this.requireEmployee(companyId, id);
+    const existing = await this.requireEmployee(companyId, id);
     if (input.managerId === id) {
       throw new ValidationError('Employee cannot be their own manager');
     }
     await this.validateOrgRefs(companyId, input);
+    if (input.managerId) await this.assertNoManagerCycle(id, input.managerId);
+
+    const exiting =
+      (input.status !== undefined &&
+        EXITED_STATUSES.includes(input.status) &&
+        !EXITED_STATUSES.includes(existing.status)) ||
+      (input.isActive === false && existing.isActive);
+    if (exiting && existing.userId === actor.id) {
+      throw new ValidationError('You cannot deactivate or terminate your own employee profile');
+    }
+
     try {
       const employee = await this.repo.updateEmployee(id, input);
+      if (exiting) await this.repo.deactivateLinkedUser(id);
       await this.repo.createAuditLog({
         actorId: actor.id,
         action: 'employees.update',
@@ -176,14 +206,31 @@ export class EmployeeService {
     }
   }
 
+  private async assertNoManagerCycle(employeeId: string, managerId: string) {
+    const visited = new Set<string>();
+    let current: string | null = managerId;
+    while (current) {
+      if (current === employeeId) {
+        throw new ValidationError('Invalid manager: this would create a circular reporting line');
+      }
+      if (visited.has(current)) return;
+      visited.add(current);
+      current = await this.repo.findManagerId(current);
+    }
+  }
+
   async remove(actor: AuthActor, id: string) {
     const companyId = await this.requireCompanyId(actor.id);
-    await this.requireEmployee(companyId, id);
+    const target = await this.requireEmployee(companyId, id);
+    if (target.userId === actor.id) {
+      throw new ValidationError('You cannot delete your own employee profile');
+    }
     const reports = await this.repo.countDirectReports(id);
     if (reports > 0) {
       throw new ValidationError('Cannot delete an employee who has direct reports');
     }
     await this.repo.softDeleteEmployee(id);
+    await this.repo.deactivateLinkedUser(id);
     await this.repo.createAuditLog({
       actorId: actor.id,
       action: 'employees.delete',
@@ -234,7 +281,8 @@ export class EmployeeService {
   async getActivity(actor: AuthActor, id: string, limit = 20) {
     const companyId = await this.requireCompanyId(actor.id);
     await this.requireEmployee(companyId, id);
-    const items = await this.repo.listActivity(id, Math.min(50, Math.max(1, limit)));
+    if (!Number.isFinite(limit)) throw new ValidationError('Invalid limit');
+    const items = await this.repo.listActivity(id, Math.min(50, Math.max(1, Math.trunc(limit))));
     return { items };
   }
 
@@ -262,7 +310,7 @@ export class EmployeeService {
     await this.requireEmployee(companyId, employeeId);
     const existing = await this.repo.findEmergencyContact(employeeId, contactId);
     if (!existing) throw new NotFoundError('Emergency contact not found');
-    return this.repo.updateEmergencyContact(contactId, input);
+    return this.repo.updateEmergencyContact(employeeId, contactId, input);
   }
 
   async deleteEmergencyContact(actor: AuthActor, employeeId: string, contactId: string) {

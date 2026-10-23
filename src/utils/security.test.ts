@@ -11,6 +11,8 @@ import {
 describe('security utils', () => {
   it('detects weak secrets', () => {
     assert.equal(isWeakSecret('change-me-access-secret-min-32-chars!!'), true);
+    assert.equal(isWeakSecret('replace-with-a-long-random-access-secret-at-least-32'), true);
+    assert.equal(isWeakSecret('CHANGE-ME-use-openssl-rand-hex-32-for-access'), true);
     assert.equal(isWeakSecret('short'), true);
     assert.equal(isWeakSecret('a'.repeat(40)), false);
   });

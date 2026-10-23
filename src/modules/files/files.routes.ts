@@ -2,10 +2,10 @@ import { Router } from 'express';
 import { asyncHandler } from '../../middleware/async-handler.js';
 import { authMiddleware } from '../../middleware/auth.middleware.js';
 import { requirePermissions } from '../../middleware/rbac.middleware.js';
-import { validateBody } from '../../middleware/validate.middleware.js';
+import { validateBody, validateQuery } from '../../middleware/validate.middleware.js';
 import { FilesController } from './controllers/files.controller.js';
 import { uploadSingleFile } from './middleware/upload.middleware.js';
-import { updateFileSchema } from './validators/files.validators.js';
+import { listFilesQuerySchema, updateFileSchema } from './validators/files.validators.js';
 
 const controller = new FilesController();
 
@@ -14,7 +14,12 @@ export const filesRouter = Router();
 filesRouter.use(authMiddleware);
 
 filesRouter.get('/summary', requirePermissions('files:view'), asyncHandler(controller.summary));
-filesRouter.get('/', requirePermissions('files:view'), asyncHandler(controller.list));
+filesRouter.get(
+  '/',
+  requirePermissions('files:view'),
+  validateQuery(listFilesQuerySchema),
+  asyncHandler(controller.list),
+);
 filesRouter.get(
   '/:id/download',
   requirePermissions('files:view'),

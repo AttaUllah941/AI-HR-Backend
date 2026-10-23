@@ -4,7 +4,6 @@ import { ReportsService } from '../services/reports.service.js';
 import type {
   ExportReportInput,
   ReportQueryInput,
-  ReportTypeValue,
 } from '../validators/reports.validators.js';
 
 export class ReportsController {
@@ -15,16 +14,7 @@ export class ReportsController {
   }
 
   private query(req: Request): ReportQueryInput {
-    const q = req.query as Record<string, string | undefined>;
-    return {
-      dateFrom: q.dateFrom,
-      dateTo: q.dateTo,
-      year: q.year ? Number(q.year) : undefined,
-      month: q.month ? Number(q.month) : undefined,
-      departmentId: q.departmentId,
-      employeeId: q.employeeId,
-      jobOpeningId: q.jobOpeningId,
-    };
+    return req.query as unknown as ReportQueryInput;
   }
 
   summary = async (req: Request, res: Response): Promise<void> => {
@@ -68,33 +58,17 @@ export class ReportsController {
   };
 
   exportReport = async (req: Request, res: Response): Promise<void> => {
-    const body = (req.body ?? {}) as Partial<ExportReportInput>;
-    const q = req.query as Record<string, string | undefined>;
-    const reportType = (body.reportType ?? q.reportType) as ReportTypeValue | undefined;
-    if (!reportType) {
-      res.status(400).json({
-        success: false,
-        message: 'reportType is required',
-        code: 'VALIDATION_ERROR',
-      });
-      return;
-    }
+    await this.sendExport(req, res, req.body as ExportReportInput);
+  };
 
-    const input: ExportReportInput = {
-      reportType,
-      format: (body.format ?? q.format ?? 'CSV') as ExportReportInput['format'],
-      dateFrom: body.dateFrom ?? q.dateFrom,
-      dateTo: body.dateTo ?? q.dateTo,
-      year: body.year ?? (q.year ? Number(q.year) : undefined),
-      month: body.month ?? (q.month ? Number(q.month) : undefined),
-      departmentId: body.departmentId ?? q.departmentId,
-      employeeId: body.employeeId ?? q.employeeId,
-      jobOpeningId: body.jobOpeningId ?? q.jobOpeningId,
-    };
+  exportReportFromQuery = async (req: Request, res: Response): Promise<void> => {
+    await this.sendExport(req, res, req.query as unknown as ExportReportInput);
+  };
 
+  private async sendExport(req: Request, res: Response, input: ExportReportInput): Promise<void> {
     const file = await this.service.exportReport(this.actor(req), input);
     res.setHeader('Content-Type', file.contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${file.fileName}"`);
     res.send(file.body);
-  };
+  }
 }
