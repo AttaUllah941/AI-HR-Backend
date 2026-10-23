@@ -255,7 +255,7 @@ export class LeaveRepository {
       UPDATE "leave_balances"
       SET "pending" = "pending" + ${days}, "updatedAt" = NOW()
       WHERE "id" = ${id}
-        AND ("pending" + "used" + ${days}) <= ("entitled" + "carriedForward")
+        AND ("pending" + "used" + ${days}) <= ("entitled" + "carriedForward" + 0.000001)
     `;
     return updated > 0;
   }

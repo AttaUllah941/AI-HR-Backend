@@ -18,7 +18,13 @@ export function validateBody<T>(schema: ZodType<T>) {
  */
 export function validateQuery<T>(schema: ZodType<T>) {
   return (req: Request, _res: Response, next: NextFunction): void => {
-    req.query = schema.parse(req.query) as Request['query'];
+    // Express 5 exposes req.query as a getter-only property, so shadow it on the instance.
+    Object.defineProperty(req, 'query', {
+      value: schema.parse(req.query),
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
     next();
   };
 }

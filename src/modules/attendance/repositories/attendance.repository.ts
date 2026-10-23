@@ -285,6 +285,7 @@ export class AttendanceRepository {
   }
 
   createAttendance(companyId: string, data: CreateAttendanceInput & {
+    employeeId: string;
     status: AttendanceStatus;
     workMinutes: number;
     overtimeMinutes: number;
@@ -452,7 +453,7 @@ export class AttendanceRepository {
     });
   }
 
-  createOvertime(companyId: string, data: CreateOvertimeInput) {
+  createOvertime(companyId: string, data: CreateOvertimeInput & { employeeId: string }) {
     const day = new Date(
       Date.UTC(data.date.getUTCFullYear(), data.date.getUTCMonth(), data.date.getUTCDate()),
     );

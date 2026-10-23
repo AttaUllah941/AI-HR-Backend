@@ -251,6 +251,13 @@ export class FilesService {
     let employeeId = emptyToNull(input.employeeId) ?? null;
     let candidateId = emptyToNull(input.candidateId) ?? null;
 
+    // A personal avatar is never linked to an employee/candidate record, so any ids sent by the
+    // client are dropped before the attach check; users may always upload their own avatar.
+    if (category === 'AVATAR') {
+      employeeId = null;
+      candidateId = null;
+    }
+
     this.assertCanAttach(actor, employeeId, candidateId);
 
     if (employeeId) {

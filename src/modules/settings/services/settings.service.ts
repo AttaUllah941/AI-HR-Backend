@@ -11,6 +11,7 @@ import { logger } from '../../../config/logger.js';
 import { emailService } from '../../../services/email/email.service.js';
 import { AppError } from '../../../utils/app-error.js';
 import { hashPassword } from '../../../utils/password.js';
+import { validatePasswordAgainstPolicy } from '../../../utils/security.js';
 import { SettingsRepository } from '../repositories/settings.repository.js';
 import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import type {
@@ -413,6 +414,17 @@ export class SettingsService {
 
     this.assertCanAssignRoles(actor, roles);
 
+    if (input.temporaryPassword) {
+      const policy = await this.repo.getSecurityPolicy(companyId);
+      const passwordError = validatePasswordAgainstPolicy(input.temporaryPassword, {
+        passwordMinLength: policy.passwordMinLength,
+        passwordRequireLetter: policy.passwordRequireLetter,
+        passwordRequireNumber: policy.passwordRequireNumber,
+        passwordRequireSpecial: policy.passwordRequireSpecial,
+      });
+      if (passwordError) throw new ValidationError(passwordError);
+    }
+
     const temporaryPassword =
       input.temporaryPassword ?? `Tmp${randomBytes(4).toString('hex')}A1!`;
     const passwordHash = await hashPassword(temporaryPassword);
@@ -456,7 +468,7 @@ export class SettingsService {
             userId: user.id,
             error: error instanceof Error ? error.message : String(error),
           });
-          await this.repo.softDeleteUser(user.id);
+          await this.repo.discardNewUser(user.id, user.email);
           throw new AppError(
             'The user could not be created because the credentials email failed to send',
             502,

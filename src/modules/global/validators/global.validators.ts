@@ -42,7 +42,7 @@ const optionalBool = z.preprocess((value) => {
 
 const SAFE_ROUTE = /^\/[A-Za-z0-9\-._~/?=&%#:@!$'()*+,;]*$/;
 
-function isSafeInternalRoute(route: string): boolean {
+export function isSafeInternalRoute(route: string): boolean {
   if (!SAFE_ROUTE.test(route)) return false;
   if (route.includes('//') || route.includes('\\')) return false;
   let decoded: string;

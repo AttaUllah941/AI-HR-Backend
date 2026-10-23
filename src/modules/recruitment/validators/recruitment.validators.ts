@@ -72,7 +72,8 @@ export const createCandidateSchema = z.object({
   yearsExperience: z.number().min(0).max(60).optional().nullable(),
   linkedinUrl: httpUrl(500),
   portfolioUrl: httpUrl(500),
-  resumeUrl: httpUrl(1000),
+  // Uploaded company files are referenced by path; the service verifies path or https URL.
+  resumeUrl: optionalString(1000),
   resumeFileName: optionalString(255),
   resumeMimeType: optionalString(100),
   screeningScore: z.number().min(0).max(100).optional().nullable(),

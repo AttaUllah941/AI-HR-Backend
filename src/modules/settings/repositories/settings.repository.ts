@@ -243,6 +243,33 @@ export class SettingsRepository {
     });
   }
 
+  /**
+   * Removes a user that was just created and never used, freeing the unique email for a retry.
+   * Falls back to a soft delete (with a tombstoned email) if related rows block the hard delete.
+   */
+  async discardNewUser(userId: string, email: string) {
+    try {
+      await prisma.user.delete({ where: { id: userId } });
+    } catch {
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          status: 'DELETED',
+          deletedAt: new Date(),
+          email: `deleted+${userId}+${email}`,
+        },
+      });
+    }
+  }
+
+  getSecurityPolicy(companyId: string) {
+    return prisma.companySecurityPolicy.upsert({
+      where: { companyId },
+      create: { companyId },
+      update: {},
+    });
+  }
+
   listRoles() {
     return prisma.role.findMany({
       orderBy: { name: 'asc' },

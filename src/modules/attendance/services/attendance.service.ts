@@ -326,12 +326,13 @@ export class AttendanceService {
 
   async create(actor: AuthActor, input: CreateAttendanceInput) {
     const companyId = await this.requireCompanyId(actor.id);
-    await this.resolveWritableEmployeeId(companyId, actor, input.employeeId);
+    const employeeId = await this.resolveWritableEmployeeId(companyId, actor, input.employeeId);
     await this.assertShiftInCompany(companyId, input.shiftId);
     const metrics = await this.computeMetrics(companyId, input);
     try {
       const record = await this.repo.createAttendance(companyId, {
         ...input,
+        employeeId,
         date: metrics.day,
         shiftId: metrics.shiftId,
         status: metrics.status,

@@ -85,14 +85,8 @@ export const createUserSchema = z.object({
   lastName: z.string().min(1).max(100),
   phone: z.string().max(40).optional().nullable(),
   roleCodes: z.array(z.string().min(1)).min(1),
-  temporaryPassword: z
-    .string()
-    .min(8)
-    .max(128)
-    .regex(/[A-Z]/, 'Must include an uppercase letter')
-    .regex(/[a-z]/, 'Must include a lowercase letter')
-    .regex(/[0-9]/, 'Must include a number')
-    .optional(),
+  // Strength is checked against the company's password policy in the service.
+  temporaryPassword: z.string().min(1).max(128).optional(),
 });
 
 export const updateUserSchema = z

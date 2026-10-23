@@ -3,7 +3,7 @@
  */
 
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-const PHONE_PATTERN = /(?<![\w.])\+?\d[\d\s().-]{7,}\d(?![\w.])/g;
+const PHONE_PATTERN = /(?<![\w.])[+(]?\d[\d\s().-]{7,}\d(?![\w.])/g;
 const ADDRESS_PATTERN =
   /\b\d{1,5}\s+(?:[A-Za-z0-9.'-]+\s){1,4}(?:street|st|road|rd|avenue|ave|lane|ln|boulevard|blvd|drive|dr|court|ct|way|place|pl)\b\.?/gi;
 
@@ -31,7 +31,17 @@ export function redactPiiText(text: string): string {
   return text
     .replace(EMAIL_PATTERN, '[email removed]')
     .replace(ADDRESS_PATTERN, '[address removed]')
-    .replace(PHONE_PATTERN, '[phone removed]');
+    .replace(PHONE_PATTERN, (match) => (looksLikePhone(match) ? '[phone removed]' : match));
+}
+
+const DATE_LIKE = /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$|^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$/;
+
+/** Dates, ranges and long numeric IDs share the phone shape; only 9-15 digit non-dates count. */
+function looksLikePhone(candidate: string): boolean {
+  const trimmed = candidate.trim();
+  if (DATE_LIKE.test(trimmed)) return false;
+  const digits = trimmed.replace(/\D/g, '').length;
+  return digits >= 9 && digits <= 15;
 }
 
 /** Deep-clones a JSON-like value, dropping PII keys and masking PII inside strings. */

@@ -376,7 +376,7 @@ export class AuthService {
     };
   }
 
-  async logout(userId: string, refreshToken?: string) {
+  async logout(userId: string, refreshToken?: string, currentSessionId?: string) {
     if (refreshToken) {
       try {
         const payload = verifyRefreshToken(refreshToken);
@@ -389,6 +389,10 @@ export class AuthService {
         }
       } catch {
         // Ignore invalid refresh on logout
+      }
+      // Always end the session the access token belongs to, even if the refresh token was stale.
+      if (currentSessionId) {
+        await this.repo.revokeSessionForUser(userId, currentSessionId);
       }
     } else {
       await this.repo.revokeUserSessions(userId);

@@ -25,4 +25,14 @@ describe('request-ip', () => {
     });
     assert.equal(getRequestIp(req), '::1');
   });
+
+  it('falls back to the socket address and then 0.0.0.0', () => {
+    const viaSocket = mockRequest({
+      headers: {},
+      socket: { remoteAddress: '10.1.2.3' } as Request['socket'],
+    });
+    assert.equal(getRequestIp(viaSocket), '10.1.2.3');
+    const none = mockRequest({ headers: {}, socket: {} as Request['socket'] });
+    assert.equal(getRequestIp(none), '0.0.0.0');
+  });
 });

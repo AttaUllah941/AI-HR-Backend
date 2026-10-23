@@ -375,6 +375,9 @@ export class RecruitmentService {
 
   async createCandidate(actor: AuthActor, input: CreateCandidateInput) {
     const companyId = await this.requireCompanyId(actor.id);
+    if (input.resumeUrl) {
+      input = { ...input, resumeUrl: await this.assertResumeUrl(companyId, input.resumeUrl) };
+    }
     try {
       const candidate = await this.repo.createCandidate(companyId, input);
       await this.repo.createAuditLog({
@@ -393,6 +396,9 @@ export class RecruitmentService {
     const companyId = await this.requireCompanyId(actor.id);
     const existing = await this.repo.findCandidate(companyId, id);
     if (!existing) throw new NotFoundError('Candidate not found');
+    if (input.resumeUrl && input.resumeUrl !== existing.resumeUrl) {
+      input = { ...input, resumeUrl: await this.assertResumeUrl(companyId, input.resumeUrl) };
+    }
     try {
       const candidate = await this.repo.updateCandidate(id, input);
       await this.repo.createAuditLog({

@@ -180,6 +180,13 @@ export class AuthRepository {
     return result.count === 1;
   }
 
+  revokeSessionForUser(userId: string, id: string) {
+    return prisma.session.updateMany({
+      where: { id, userId, status: 'ACTIVE' },
+      data: { status: 'REVOKED', revokedAt: new Date() },
+    });
+  }
+
   revokeUserSessions(userId: string) {
     return prisma.session.updateMany({
       where: { userId, status: 'ACTIVE' },
