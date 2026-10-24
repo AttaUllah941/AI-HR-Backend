@@ -17,7 +17,20 @@ import type {
   UpdateTaxSettingInput,
 } from '../validators/payroll.validators.js';
 
-type AuthActor = { id: string; permissions: string[] };
+type AuthActor = { id: string; permissions: string[]; roles?: string[] };
+
+/**
+ * Maker-checker rule: a processor may approve their own run only when they are SUPER_ADMIN
+ * or no other active user in the company holds payroll:approve.
+ */
+export function canSelfApprovePayrollRun(input: {
+  processedByActor: boolean;
+  actorIsSuperAdmin: boolean;
+  otherApproverCount: number;
+}): boolean {
+  if (!input.processedByActor) return true;
+  return input.actorIsSuperAdmin || input.otherApproverCount === 0;
+}
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -712,7 +725,15 @@ export class PayrollService {
     // Maker-checker: the user who processed the run cannot also approve it.
     const processedByActor = await this.repo.countAuditByActor('payroll.run.process', id, actor.id);
     if (processedByActor > 0) {
-      throw new ForbiddenError('You processed this payroll run and cannot approve it');
+      const otherApproverCount = await this.repo.countOtherActiveApprovers(companyId, actor.id);
+      const allowed = canSelfApprovePayrollRun({
+        processedByActor: true,
+        actorIsSuperAdmin: (actor.roles ?? []).includes('SUPER_ADMIN'),
+        otherApproverCount,
+      });
+      if (!allowed) {
+        throw new ForbiddenError('You processed this payroll run and cannot approve it');
+      }
     }
 
     const claimed = await this.repo.transitionRun(id, companyId, ['COMPLETED'], {

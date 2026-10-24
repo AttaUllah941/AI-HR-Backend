@@ -254,6 +254,23 @@ export class EmployeeRepository {
     ]);
   }
 
+  /**
+   * Restores a login suspended by the termination flow. Returns the user id when a user was
+   * actually moved SUSPENDED -> ACTIVE, otherwise null.
+   */
+  async reactivateLinkedUser(employeeId: string): Promise<string | null> {
+    const employee = await prisma.employee.findUnique({
+      where: { id: employeeId },
+      select: { userId: true },
+    });
+    if (!employee?.userId) return null;
+    const res = await prisma.user.updateMany({
+      where: { id: employee.userId, status: 'SUSPENDED', deletedAt: null },
+      data: { status: 'ACTIVE' },
+    });
+    return res.count > 0 ? employee.userId : null;
+  }
+
   countDirectReports(employeeId: string) {
     return prisma.employee.count({ where: { managerId: employeeId, ...notDeleted } });
   }

@@ -815,11 +815,19 @@ export class LeaveService {
     const year = yearParam ? Number(yearParam) : new Date().getUTCFullYear();
     if (!Number.isFinite(year)) throw new ValidationError('Invalid year');
 
-    const [balancePage, counts] = await Promise.all([
-      this.repo.listBalances(companyId, year, { employeeId, page: 1, pageSize: 100 }),
-      this.repo.summaryCounts(companyId, year, employeeId),
-    ]);
-    const [balances] = balancePage;
+    // Page through every balance row so the summary is never truncated at the page-size cap.
+    const PAGE_SIZE = 100;
+    const balances: Awaited<ReturnType<LeaveRepository['listBalances']>>[0] = [];
+    for (let page = 1; ; page += 1) {
+      const [rows, total] = await this.repo.listBalances(companyId, year, {
+        employeeId,
+        page,
+        pageSize: PAGE_SIZE,
+      });
+      balances.push(...rows);
+      if (rows.length < PAGE_SIZE || balances.length >= total) break;
+    }
+    const counts = await this.repo.summaryCounts(companyId, year, employeeId);
 
     const byStatus: Record<string, { count: number; days: number }> = {};
     for (const row of counts) {

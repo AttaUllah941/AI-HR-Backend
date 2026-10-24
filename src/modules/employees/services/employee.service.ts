@@ -194,6 +194,20 @@ export class EmployeeService {
     try {
       const employee = await this.repo.updateEmployee(id, input);
       if (exiting) await this.repo.deactivateLinkedUser(id);
+      // Only undo suspensions that the exit flow could have caused (previous status was an exit status).
+      const reactivating = input.status === 'ACTIVE' && EXITED_STATUSES.includes(existing.status);
+      if (reactivating) {
+        const reactivatedUserId = await this.repo.reactivateLinkedUser(id);
+        if (reactivatedUserId) {
+          await this.repo.createAuditLog({
+            actorId: actor.id,
+            action: 'employees.reactivate_user',
+            entityType: 'User',
+            entityId: reactivatedUserId,
+            metadata: { employeeId: id, previousStatus: existing.status },
+          });
+        }
+      }
       await this.repo.createAuditLog({
         actorId: actor.id,
         action: 'employees.update',

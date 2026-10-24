@@ -506,12 +506,11 @@ export class ReportsService {
     if (format === 'XLSX') {
       const body = await toXlsx(input.reportType, headers, rows);
       const fileName = `${baseName}.xlsx`;
-      // The ReportExportFormat enum has no XLSX member; tabular exports are logged as CSV.
       await this.repo.createExportLog({
         companyId,
         userId: actor.id,
         reportType,
-        format: 'CSV',
+        format: 'XLSX',
         filters: query as object,
         rowCount: rows.length,
         fileName,

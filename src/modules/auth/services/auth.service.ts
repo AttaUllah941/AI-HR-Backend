@@ -15,7 +15,14 @@ import {
   verifyMfaChallengeToken,
   verifyRefreshToken,
 } from '../../../utils/jwt.js';
-import { buildMfaUri, createMfaSecret, verifyMfaCode } from '../../../utils/mfa.js';
+import {
+  buildMfaUri,
+  createMfaSecret,
+  isLegacyMfaSecret,
+  openMfaSecret,
+  sealMfaSecret,
+  verifyMfaCode,
+} from '../../../utils/mfa.js';
 import { emailService } from '../../../services/email/email.service.js';
 import { Prisma } from '@prisma/client';
 import { isDevelopment } from '../../../config/env.js';
@@ -295,7 +302,8 @@ export class AuthService {
       throw new ForbiddenError('Account is temporarily locked due to failed sign-in attempts');
     }
 
-    if (!verifyMfaCode(user.mfaSecret, input.code)) {
+    const mfaPlain = openMfaSecret(user.mfaSecret);
+    if (!verifyMfaCode(mfaPlain, input.code)) {
       const policy = user.companyId ? await this.repo.getSecurityPolicy(user.companyId) : null;
       const maxFailed = policy?.maxFailedLogins ?? 5;
       const lockoutMinutes = policy?.lockoutMinutes ?? 15;
@@ -318,7 +326,12 @@ export class AuthService {
       throw new UnauthorizedError('Invalid authentication code');
     }
 
-    await this.repo.updateUser(user.id, { failedLoginCount: 0, lockedUntil: null });
+    await this.repo.updateUser(user.id, {
+      failedLoginCount: 0,
+      lockedUntil: null,
+      // Lazily migrate legacy plaintext secrets to encrypted storage.
+      ...(isLegacyMfaSecret(user.mfaSecret) ? { mfaSecret: sealMfaSecret(mfaPlain) } : {}),
+    });
     return this.issueSession(user, meta, 'auth.mfa.verify', challenge.remember);
   }
 
@@ -516,13 +529,13 @@ export class AuthService {
       if (!validPassword) {
         throw new UnauthorizedError('Invalid password');
       }
-      if (!user.mfaSecret || !verifyMfaCode(user.mfaSecret, input.code)) {
+      if (!user.mfaSecret || !verifyMfaCode(openMfaSecret(user.mfaSecret), input.code)) {
         throw new UnauthorizedError('Invalid authentication code');
       }
     }
 
     const secret = createMfaSecret();
-    await this.repo.updateUser(userId, { mfaSecret: secret, mfaEnabled: false });
+    await this.repo.updateUser(userId, { mfaSecret: sealMfaSecret(secret), mfaEnabled: false });
 
     return {
       secret,
@@ -536,7 +549,7 @@ export class AuthService {
       throw new ValidationError('Run MFA setup first');
     }
 
-    if (!verifyMfaCode(user.mfaSecret, input.code)) {
+    if (!verifyMfaCode(openMfaSecret(user.mfaSecret), input.code)) {
       throw new UnauthorizedError('Invalid authentication code');
     }
 
@@ -562,7 +575,7 @@ export class AuthService {
       throw new UnauthorizedError('Invalid password');
     }
 
-    if (user.mfaEnabled && user.mfaSecret && !verifyMfaCode(user.mfaSecret, input.code)) {
+    if (user.mfaEnabled && user.mfaSecret && !verifyMfaCode(openMfaSecret(user.mfaSecret), input.code)) {
       throw new UnauthorizedError('Invalid authentication code');
     }
 

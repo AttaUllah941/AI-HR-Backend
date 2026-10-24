@@ -1,5 +1,6 @@
 import { config as loadEnv } from 'dotenv';
 import { z } from 'zod';
+import { parseEncryptionKey } from '../utils/secret-box.js';
 
 loadEnv();
 
@@ -10,6 +11,20 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   JWT_ACCESS_SECRET: z.string().min(32),
   JWT_REFRESH_SECRET: z.string().min(32),
+  // 32-byte key (64 hex chars or base64) for MFA secrets at rest. Required in production.
+  MFA_ENCRYPTION_KEY: z
+    .string()
+    .optional()
+    .default('')
+    .refine((v) => v === '' || parseEncryptionKey(v) !== null, {
+      message: 'MFA_ENCRYPTION_KEY must be 32 bytes encoded as 64 hex chars or base64',
+    }),
+  // Staging-only override that allows EMAIL_PROVIDER=console in production
+  ALLOW_CONSOLE_EMAIL: z
+    .enum(['true', 'false'])
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true'),
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
   CORS_ORIGIN: z.string().default('http://localhost:4200'),

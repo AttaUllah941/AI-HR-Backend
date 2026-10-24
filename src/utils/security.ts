@@ -29,6 +29,20 @@ export function assertProductionSecrets(): void {
     process.exit(1);
   }
 
+  if (!env.MFA_ENCRYPTION_KEY) {
+    console.error(
+      'Refusing to start: MFA_ENCRYPTION_KEY is required in production (32 bytes, 64 hex chars or base64).',
+    );
+    process.exit(1);
+  }
+
+  if (env.EMAIL_PROVIDER === 'console' && !env.ALLOW_CONSOLE_EMAIL) {
+    console.error(
+      'Refusing to start: EMAIL_PROVIDER=console would log temporary passwords and reset links. Use smtp, or set ALLOW_CONSOLE_EMAIL=true for staging only.',
+    );
+    process.exit(1);
+  }
+
   if (env.JWT_ACCESS_SECRET === env.JWT_REFRESH_SECRET) {
     console.error(
       'Refusing to start: JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must differ in production.',

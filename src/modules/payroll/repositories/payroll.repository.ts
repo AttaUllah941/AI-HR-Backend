@@ -119,6 +119,25 @@ export class PayrollRepository {
     return prisma.auditLog.count({ where: { action, entityId, actorId } });
   }
 
+  /** Active users in the company (other than excludeUserId) holding payroll:approve via a role. */
+  countOtherActiveApprovers(companyId: string, excludeUserId: string): Promise<number> {
+    return prisma.user.count({
+      where: {
+        companyId,
+        deletedAt: null,
+        status: 'ACTIVE',
+        id: { not: excludeUserId },
+        userRoles: {
+          some: {
+            role: {
+              rolePermissions: { some: { permission: { code: 'payroll:approve' } } },
+            },
+          },
+        },
+      },
+    });
+  }
+
   findUserCompanyId(userId: string) {
     return prisma.user.findFirst({
       where: { id: userId, deletedAt: null },

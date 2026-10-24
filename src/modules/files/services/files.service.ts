@@ -251,6 +251,13 @@ export class FilesService {
     let employeeId = emptyToNull(input.employeeId) ?? null;
     let candidateId = emptyToNull(input.candidateId) ?? null;
 
+    if (category !== 'AVATAR' && !actor.permissions.includes('files:create')) {
+      throw new ForbiddenError('files:create permission is required');
+    }
+    if (category === 'AVATAR' && !input.mimeType.toLowerCase().startsWith('image/')) {
+      throw new ValidationError('Avatar must be an image');
+    }
+
     // A personal avatar is never linked to an employee/candidate record, so any ids sent by the
     // client are dropped before the attach check; users may always upload their own avatar.
     if (category === 'AVATAR') {

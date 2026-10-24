@@ -32,6 +32,8 @@ Repos: Angular 21 · Node.js 22 · Express 5 · Prisma 7 · PostgreSQL 16
 |----------|------|
 | `NODE_ENV` | Must be `production` |
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | ≥ 32 chars, distinct, no weak markers (`change-me`, `example`, `replace-with`, `openssl-rand`, …). Startup refuses otherwise. Generate with `openssl rand -hex 32`. |
+| `MFA_ENCRYPTION_KEY` | **Required.** 32 bytes as 64 hex chars or base64 (`openssl rand -hex 32`). AES-256-GCM key for MFA secrets at rest (`enc:v1:` prefix). Legacy plaintext secrets are re-encrypted on the next successful MFA verify. Outside production it falls back to a key derived from `JWT_ACCESS_SECRET`. Losing/changing the key invalidates stored MFA secrets. |
+| `EMAIL_PROVIDER` | Must be `smtp`. `console` logs temporary passwords/reset links, so startup refuses unless `ALLOW_CONSOLE_EMAIL=true` (staging only). |
 | `DATABASE_URL` | Compose **overrides** this from `POSTGRES_*` when using docker-compose — keep password values aligned |
 | `CORS_ORIGIN` | Exact public web origin(s), comma-separated |
 | `APP_URL` | Public SPA URL |
