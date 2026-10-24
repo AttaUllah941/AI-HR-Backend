@@ -1,4 +1,4 @@
-import type { NotificationCategory, NotificationChannel } from '@prisma/client';
+import type { NotificationCategory } from '@prisma/client';
 import { emailService } from '../../../services/email/email.service.js';
 import { pushProvider } from '../../../services/push/push-provider.js';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../../utils/app-error.js';
@@ -6,6 +6,7 @@ import { NotificationsRepository } from '../repositories/notifications.repositor
 import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import type {
   CreateTemplateInput,
+  ListNotificationsQueryInput,
   RegisterDeviceInput,
   SendNotificationInput,
   UpdateTemplateInput,
@@ -98,23 +99,21 @@ export class NotificationsService {
     };
   }
 
-  async list(actor: AuthActor, params: Record<string, string | undefined>) {
+  async list(actor: AuthActor, params: ListNotificationsQueryInput = {}) {
     const user = await this.requireUser(actor.id);
-    const { page, pageSize } = parsePagination(params);
-    const category = params.category as NotificationCategory | undefined;
-    const channel = params.channel as NotificationChannel | undefined;
-    const status = params.status as never;
-    if (category && !ALL_CATEGORIES.includes(category)) {
-      throw new ValidationError('Invalid category');
-    }
+    const { page, pageSize } = parsePagination({
+      page: params.page,
+      pageSize: params.pageSize,
+    });
 
     const [items, total] = await this.repo.listForUser(user.companyId, actor.id, {
       page,
       pageSize,
-      category,
-      channel,
-      status,
-      unreadOnly: params.unreadOnly === 'true' || params.unreadOnly === '1',
+      category: params.category,
+      // The inbox only ever lists in-app rows unless a channel is requested explicitly.
+      channel: params.channel ?? 'IN_APP',
+      status: params.status,
+      unreadOnly: params.unreadOnly === true,
     });
     return { items, pagination: paginationMeta(page, pageSize, total) };
   }
@@ -166,16 +165,18 @@ export class NotificationsService {
 
   async upsertPreferences(actor: AuthActor, input: UpsertPreferencesInput) {
     const user = await this.requireUser(actor.id);
-    for (const pref of input.preferences) {
-      await this.repo.upsertPreference({
-        companyId: user.companyId,
-        userId: actor.id,
-        category: pref.category,
-        inAppEnabled: pref.inAppEnabled,
-        emailEnabled: pref.emailEnabled,
-        pushEnabled: pref.pushEnabled,
-      });
-    }
+    await Promise.all(
+      input.preferences.map((pref) =>
+        this.repo.upsertPreference({
+          companyId: user.companyId,
+          userId: actor.id,
+          category: pref.category,
+          inAppEnabled: pref.inAppEnabled,
+          emailEnabled: pref.emailEnabled,
+          pushEnabled: pref.pushEnabled,
+        }),
+      ),
+    );
     return this.getPreferences(actor);
   }
 
@@ -312,10 +313,16 @@ export class NotificationsService {
     const pushOk = pref?.pushEnabled ?? false;
 
     const created = [];
+    const skippedChannels: string[] = [];
     for (const channel of input.channels) {
-      if (channel === 'IN_APP' && !inAppOk) continue;
-      if (channel === 'EMAIL' && !emailOk) continue;
-      if (channel === 'PUSH' && !pushOk) continue;
+      if (
+        (channel === 'IN_APP' && !inAppOk) ||
+        (channel === 'EMAIL' && !emailOk) ||
+        (channel === 'PUSH' && !pushOk)
+      ) {
+        skippedChannels.push(channel);
+        continue;
+      }
 
       const notification = await this.repo.createNotification({
         companyId: sender.companyId,
@@ -384,6 +391,16 @@ export class NotificationsService {
       }
     }
 
-    return { items: created, count: created.length };
+    return {
+      items: created,
+      count: created.length,
+      skippedChannels,
+      ...(created.length === 0 && skippedChannels.length > 0
+        ? {
+            message:
+              'No notification was sent: the recipient has disabled every requested channel for this category.',
+          }
+        : {}),
+    };
   }
 }

@@ -24,9 +24,13 @@ declare global {
 }
 
 async function hydrateAuthUser(userId: string, sessionId?: string): Promise<AuthUser | null> {
-  const user = await authRepo.findById(userId);
+  // Tokens without a session id cannot be revoked, so they are never accepted.
+  if (!sessionId) return null;
+
+  const user = await authRepo.findByIdWithActiveSession(userId, sessionId);
   if (
     !user ||
+    user.sessions.length === 0 ||
     user.status === 'SUSPENDED' ||
     user.status === 'DELETED' ||
     user.status === 'PENDING_VERIFICATION' ||

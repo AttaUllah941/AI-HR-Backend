@@ -75,6 +75,10 @@ export function createApp() {
       max: env.RATE_LIMIT_MAX,
       standardHeaders: true,
       legacyHeaders: false,
+      skip: (req) => {
+        const path = req.path || '';
+        return path === '/' || path.startsWith(`${env.API_PREFIX}/health`);
+      },
       message: {
         success: false,
         message: 'Too many requests, please try again later',

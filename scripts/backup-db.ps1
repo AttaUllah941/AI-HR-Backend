@@ -28,7 +28,27 @@ if (-not $pgDump) {
 
 $tmpSql = Join-Path $OutDir "zenith_hr_$Stamp.sql"
 & pg_dump -h $HostName -p $Port -U $User -d $Db --no-owner --format=plain -f $tmpSql
-Compress-Archive -Path $tmpSql -DestinationPath ($OutFile -replace '\.gz$', '.zip') -Force
-Remove-Item $tmpSql
-Write-Host 'Done. (Windows script writes .zip; use backup-db.sh or compose profile for .sql.gz)'
-Get-ChildItem (Join-Path $OutDir "zenith_hr_$Stamp.*") | Format-Table Name, Length
+
+$inputStream = [System.IO.File]::OpenRead($tmpSql)
+try {
+  $outputStream = [System.IO.File]::Create($OutFile)
+  try {
+    $gzip = New-Object System.IO.Compression.GZipStream(
+      $outputStream,
+      [System.IO.Compression.CompressionMode]::Compress
+    )
+    try {
+      $inputStream.CopyTo($gzip)
+    } finally {
+      $gzip.Dispose()
+    }
+  } finally {
+    $outputStream.Dispose()
+  }
+} finally {
+  $inputStream.Dispose()
+}
+
+Remove-Item $tmpSql -Force
+Write-Host "Done → $OutFile"
+Get-Item $OutFile | Format-Table Name, Length

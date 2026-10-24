@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { prisma } from '../../config/database.js';
-import { env } from '../../config/env.js';
 import { successResponse } from '../../interfaces/api-response.js';
 import { asyncHandler } from '../../middleware/async-handler.js';
+import { authMiddleware } from '../../middleware/auth.middleware.js';
+import { requirePermissions } from '../../middleware/rbac.middleware.js';
 
 export const healthRouter = Router();
 
@@ -57,11 +58,8 @@ healthRouter.get(
     const payload = {
       status: database === 'up' ? 'ok' : 'degraded',
       service: 'zenith-hr-api',
-      version: '1.0.0',
-      env: env.NODE_ENV,
       timestamp: new Date().toISOString(),
       database,
-      uptimeSeconds: Math.floor(process.uptime()),
     };
 
     const statusCode = database === 'up' ? 200 : 503;
@@ -69,8 +67,8 @@ healthRouter.get(
   }),
 );
 
-/** Lightweight process metrics for monitoring scrapes (no secrets). */
-healthRouter.get('/metrics', (_req, res) => {
+/** Process metrics for operators, authenticated and permission-gated. */
+healthRouter.get('/metrics', authMiddleware, requirePermissions('settings:view'), (_req, res) => {
   const mem = process.memoryUsage();
   res.status(200).json(
     successResponse(
@@ -84,8 +82,6 @@ healthRouter.get('/metrics', (_req, res) => {
           heapTotal: mem.heapTotal,
           external: mem.external,
         },
-        nodeVersion: process.version,
-        pid: process.pid,
       },
       'Metrics',
     ),

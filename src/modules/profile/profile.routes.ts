@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { asyncHandler } from '../../middleware/async-handler.js';
 import { authMiddleware } from '../../middleware/auth.middleware.js';
-import { validateBody } from '../../middleware/validate.middleware.js';
+import { validateBody, validateQuery } from '../../middleware/validate.middleware.js';
 import { ProfileController } from './controllers/profile.controller.js';
 import {
+  activityQuerySchema,
   changePasswordSchema,
   updatePreferencesSchema,
   updateProfileSchema,
@@ -34,4 +35,8 @@ profileRouter.get('/sessions', asyncHandler(controller.listSessions));
 profileRouter.delete('/sessions/:id', asyncHandler(controller.revokeSession));
 profileRouter.post('/sessions/revoke-others', asyncHandler(controller.revokeOtherSessions));
 
-profileRouter.get('/activity', asyncHandler(controller.listActivity));
+profileRouter.get(
+  '/activity',
+  validateQuery(activityQuerySchema),
+  asyncHandler(controller.listActivity),
+);

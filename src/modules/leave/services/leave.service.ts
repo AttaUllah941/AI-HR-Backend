@@ -6,6 +6,7 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../../utils/app-error.js';
+import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import { LeaveRepository } from '../repositories/leave.repository.js';
 import type {
   CreateLeaveRequestInput,
@@ -127,6 +128,11 @@ export class LeaveService {
     if (end < start) {
       throw new ValidationError('End date must be on or after start date');
     }
+    if (start.getUTCFullYear() !== end.getUTCFullYear()) {
+      throw new ValidationError(
+        'Leave requests cannot span two calendar years. Submit a separate request for each year.',
+      );
+    }
 
     if (dayType !== 'FULL_DAY') {
       if (start.getTime() !== end.getTime()) {
@@ -204,7 +210,7 @@ export class LeaveService {
     excludeId?: string,
     db?: DbClient,
   ) {
-    const overlap = await this.repo.findOverlappingRequests(
+    const overlaps = await this.repo.findOverlappingRequests(
       companyId,
       employeeId,
       startDate,
@@ -212,22 +218,41 @@ export class LeaveService {
       excludeId,
       db,
     );
-    if (!overlap) return;
 
-    if (
-      isComplementaryHalfDay(
+    for (const overlap of overlaps) {
+      const complementary = isComplementaryHalfDay(
         dayType,
         overlap.dayType,
         startDate,
         endDate,
         startOfUtcDay(overlap.startDate),
         startOfUtcDay(overlap.endDate),
-      )
-    ) {
-      return;
+      );
+      if (!complementary) {
+        throw new ConflictError('A leave request already exists for overlapping dates');
+      }
     }
+  }
 
-    throw new ConflictError('A leave request already exists for overlapping dates');
+  /**
+   * Non-admins (no leave:update) may only review requests of their direct reports.
+   * Also blocks reviewing one's own request.
+   */
+  private async assertCanReview(
+    companyId: string,
+    actor: AuthActor,
+    employeeId: string,
+    verb: 'approve' | 'reject',
+  ) {
+    const linked = await this.repo.findEmployeeByUserId(companyId, actor.id);
+    if (linked && linked.id === employeeId) {
+      throw new ForbiddenError(`You cannot ${verb} your own leave request`);
+    }
+    if (actor.permissions.includes('leave:update')) return;
+    const target = await this.repo.findEmployeeManagerId(companyId, employeeId);
+    if (!linked || !target || target.managerId !== linked.id) {
+      throw new ForbiddenError(`You can only ${verb} leave requests of your direct reports`);
+    }
   }
 
   // —— Types ——
@@ -323,12 +348,21 @@ export class LeaveService {
       await this.resolveEmployeeId(companyId, actor.id, employeeId);
     }
 
-    const items = await this.repo.listBalances(companyId, year, employeeId);
+    const { page, pageSize } = parsePagination(params, {
+      defaultPageSize: employeeId ? 50 : 50,
+      maxPageSize: 100,
+    });
+    const [items, total] = await this.repo.listBalances(companyId, year, {
+      employeeId,
+      page,
+      pageSize,
+    });
     return {
       items: items.map((item) => ({
         ...item,
         available: this.available(item),
       })),
+      pagination: paginationMeta(page, pageSize, total),
     };
   }
 
@@ -471,13 +505,15 @@ export class LeaveService {
         tx,
       );
 
-      const available = this.available(balance);
-      if (!policy.allowNegativeBalance && days > available) {
+      if (policy.allowNegativeBalance) {
+        await this.repo.adjustBalancePending(balance.id, days, tx);
+      } else if (!(await this.repo.reserveBalance(balance.id, days, tx))) {
         throw new ValidationError(
-          `Insufficient leave balance. Available: ${available} day(s), requested: ${days}`,
+          `Insufficient leave balance. Available: ${this.available(balance)} day(s), requested: ${days}`,
         );
       }
 
+      // Checked after the balance row is locked so concurrent submissions serialize.
       await this.assertNoOverlap(companyId, employeeId, startDate, endDate, dayType, undefined, tx);
 
       const request = await this.repo.createRequest(
@@ -493,8 +529,6 @@ export class LeaveService {
         },
         tx,
       );
-
-      await this.repo.adjustBalancePending(balance.id, days, tx);
 
       if (status === 'APPROVED') {
         await this.repo.movePendingToUsed(balance.id, days, tx);
@@ -564,6 +598,24 @@ export class LeaveService {
     const policy = await this.repo.upsertPolicy(companyId);
 
     await this.repo.runTransaction(async (tx) => {
+      const claimed = await this.repo.updateRequestIf(
+        id,
+        companyId,
+        ['PENDING'],
+        {
+          ...input,
+          leaveTypeId,
+          startDate,
+          endDate,
+          dayType,
+          days,
+        },
+        tx,
+      );
+      if (claimed === 0) {
+        throw new ValidationError('Only pending leave requests can be updated');
+      }
+
       const oldBalance = await this.ensureBalance(
         companyId,
         existing.employeeId,
@@ -583,33 +635,11 @@ export class LeaveService {
         tx,
       );
 
-      // Re-read after releasing old pending (same row when type/year unchanged)
-      const refreshed =
-        (await this.repo.findBalance(
-          companyId,
-          existing.employeeId,
-          leaveTypeId,
-          newYear,
-          tx,
-        )) ?? newBalance;
-
-      if (!policy.allowNegativeBalance && days > this.available(refreshed)) {
+      if (policy.allowNegativeBalance) {
+        await this.repo.adjustBalancePending(newBalance.id, days, tx);
+      } else if (!(await this.repo.reserveBalance(newBalance.id, days, tx))) {
         throw new ValidationError('Insufficient leave balance for the updated request');
       }
-
-      await this.repo.adjustBalancePending(refreshed.id, days, tx);
-      await this.repo.updateRequest(
-        id,
-        {
-          ...input,
-          leaveTypeId,
-          startDate,
-          endDate,
-          dayType,
-          days,
-        },
-        tx,
-      );
     });
 
     await this.repo.createAuditLog({
@@ -629,14 +659,25 @@ export class LeaveService {
       throw new ValidationError('Only pending requests can be approved');
     }
 
-    const linked = await this.repo.findEmployeeByUserId(companyId, actor.id);
-    if (linked && linked.id === existing.employeeId) {
-      throw new ForbiddenError('You cannot approve your own leave request');
-    }
+    await this.assertCanReview(companyId, actor, existing.employeeId, 'approve');
 
     const year = startOfUtcDay(existing.startDate).getUTCFullYear();
 
     await this.repo.runTransaction(async (tx) => {
+      const claimed = await this.repo.updateRequestIf(
+        id,
+        companyId,
+        ['PENDING'],
+        {
+          status: 'APPROVED',
+          reviewedBy: actor.id,
+          reviewedAt: new Date(),
+          reviewNotes: input.reviewNotes ?? null,
+        },
+        tx,
+      );
+      if (claimed === 0) throw new ValidationError('Only pending requests can be approved');
+
       const balance = await this.ensureBalance(
         companyId,
         existing.employeeId,
@@ -646,16 +687,6 @@ export class LeaveService {
         tx,
       );
       await this.repo.movePendingToUsed(balance.id, existing.days, tx);
-      await this.repo.updateRequest(
-        id,
-        {
-          status: 'APPROVED',
-          reviewedBy: actor.id,
-          reviewedAt: new Date(),
-          reviewNotes: input.reviewNotes ?? null,
-        },
-        tx,
-      );
     });
 
     await this.repo.createAuditLog({
@@ -675,14 +706,25 @@ export class LeaveService {
       throw new ValidationError('Only pending requests can be rejected');
     }
 
-    const linked = await this.repo.findEmployeeByUserId(companyId, actor.id);
-    if (linked && linked.id === existing.employeeId) {
-      throw new ForbiddenError('You cannot reject your own leave request');
-    }
+    await this.assertCanReview(companyId, actor, existing.employeeId, 'reject');
 
     const year = startOfUtcDay(existing.startDate).getUTCFullYear();
 
     await this.repo.runTransaction(async (tx) => {
+      const claimed = await this.repo.updateRequestIf(
+        id,
+        companyId,
+        ['PENDING'],
+        {
+          status: 'REJECTED',
+          reviewedBy: actor.id,
+          reviewedAt: new Date(),
+          reviewNotes: input.reviewNotes ?? null,
+        },
+        tx,
+      );
+      if (claimed === 0) throw new ValidationError('Only pending requests can be rejected');
+
       const balance = await this.repo.findBalance(
         companyId,
         existing.employeeId,
@@ -693,16 +735,6 @@ export class LeaveService {
       if (balance) {
         await this.repo.adjustBalancePending(balance.id, -existing.days, tx);
       }
-      await this.repo.updateRequest(
-        id,
-        {
-          status: 'REJECTED',
-          reviewedBy: actor.id,
-          reviewedAt: new Date(),
-          reviewNotes: input.reviewNotes ?? null,
-        },
-        tx,
-      );
     });
 
     await this.repo.createAuditLog({
@@ -735,6 +767,23 @@ export class LeaveService {
     const year = startOfUtcDay(existing.startDate).getUTCFullYear();
 
     await this.repo.runTransaction(async (tx) => {
+      // Only transition from the status we observed, so the balance side effect matches it.
+      const claimed = await this.repo.updateRequestIf(
+        id,
+        companyId,
+        [existing.status],
+        {
+          status: 'CANCELLED',
+          reviewedBy: actor.id,
+          reviewedAt: new Date(),
+          reviewNotes: 'Cancelled',
+        },
+        tx,
+      );
+      if (claimed === 0) {
+        throw new ConflictError('Leave request status changed; reload and try again');
+      }
+
       const balance = await this.repo.findBalance(
         companyId,
         existing.employeeId,
@@ -749,16 +798,6 @@ export class LeaveService {
           await this.repo.adjustBalanceUsed(balance.id, -existing.days, tx);
         }
       }
-      await this.repo.updateRequest(
-        id,
-        {
-          status: 'CANCELLED',
-          reviewedBy: actor.id,
-          reviewedAt: new Date(),
-          reviewNotes: 'Cancelled',
-        },
-        tx,
-      );
     });
 
     await this.repo.createAuditLog({
@@ -776,10 +815,19 @@ export class LeaveService {
     const year = yearParam ? Number(yearParam) : new Date().getUTCFullYear();
     if (!Number.isFinite(year)) throw new ValidationError('Invalid year');
 
-    const [balances, counts] = await Promise.all([
-      this.repo.listBalances(companyId, year, employeeId),
-      this.repo.summaryCounts(companyId, year, employeeId),
-    ]);
+    // Page through every balance row so the summary is never truncated at the page-size cap.
+    const PAGE_SIZE = 100;
+    const balances: Awaited<ReturnType<LeaveRepository['listBalances']>>[0] = [];
+    for (let page = 1; ; page += 1) {
+      const [rows, total] = await this.repo.listBalances(companyId, year, {
+        employeeId,
+        page,
+        pageSize: PAGE_SIZE,
+      });
+      balances.push(...rows);
+      if (rows.length < PAGE_SIZE || balances.length >= total) break;
+    }
+    const counts = await this.repo.summaryCounts(companyId, year, employeeId);
 
     const byStatus: Record<string, { count: number; days: number }> = {};
     for (const row of counts) {

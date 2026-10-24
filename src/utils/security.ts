@@ -1,7 +1,18 @@
 import { env, isProduction } from '../config/env.js';
 import { isIpAllowed as matchIpAllowlist, isValidIpOrCidr, normalizeCidr } from './ip-matcher.js';
 
-const WEAK_SECRET_MARKERS = ['change-me', 'changeme', 'secret-min-32', 'your-secret', 'example'];
+const WEAK_SECRET_MARKERS = [
+  'change-me',
+  'changeme',
+  'secret-min-32',
+  'your-secret',
+  'example',
+  'replace-with',
+  'at-least-32',
+  'placeholder',
+  'generate-with',
+  'openssl-rand',
+];
 
 export function isWeakSecret(value: string): boolean {
   const lower = value.toLowerCase();
@@ -14,6 +25,20 @@ export function assertProductionSecrets(): void {
   if (isWeakSecret(env.JWT_ACCESS_SECRET) || isWeakSecret(env.JWT_REFRESH_SECRET)) {
     console.error(
       'Refusing to start: JWT secrets look weak or default. Set strong JWT_ACCESS_SECRET and JWT_REFRESH_SECRET in production.',
+    );
+    process.exit(1);
+  }
+
+  if (!env.MFA_ENCRYPTION_KEY) {
+    console.error(
+      'Refusing to start: MFA_ENCRYPTION_KEY is required in production (32 bytes, 64 hex chars or base64).',
+    );
+    process.exit(1);
+  }
+
+  if (env.EMAIL_PROVIDER === 'console' && !env.ALLOW_CONSOLE_EMAIL) {
+    console.error(
+      'Refusing to start: EMAIL_PROVIDER=console would log temporary passwords and reset links. Use smtp, or set ALLOW_CONSOLE_EMAIL=true for staging only.',
     );
     process.exit(1);
   }

@@ -1,10 +1,12 @@
 import type { ApplicationStatus } from '@prisma/client';
+import { z } from 'zod';
 import {
   ConflictError,
   ForbiddenError,
   NotFoundError,
   ValidationError,
 } from '../../../utils/app-error.js';
+import { env } from '../../../config/env.js';
 import { RecruitmentRepository } from '../repositories/recruitment.repository.js';
 import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import type {
@@ -22,8 +24,25 @@ import type {
   UpdateJobOpeningInput,
   UpdateOfferInput,
 } from '../validators/recruitment.validators.js';
+import {
+  applicationStatus,
+  interviewStatus,
+  jobStatus,
+  offerStatus,
+} from '../validators/recruitment.validators.js';
 
 type AuthActor = { id: string; permissions: string[] };
+
+function parseEnumParam<T extends string>(
+  schema: z.ZodType<T>,
+  value: string | undefined,
+  field: string,
+): T | undefined {
+  if (value === undefined || value === '') return undefined;
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new ValidationError(`Invalid ${field}`);
+  return parsed.data;
+}
 
 function countsByKey(
   rows: { status: string; _count: { _all: number } }[],
@@ -56,6 +75,27 @@ export class RecruitmentService {
       throw new ConflictError(message);
     }
     throw error;
+  }
+
+  /**
+   * A resume reference must be either a stored file of this company (served by the files module)
+   * or an absolute https URL. Anything else (javascript:, data:, other tenants' files) is rejected.
+   */
+  private async assertResumeUrl(companyId: string, rawUrl: string): Promise<string> {
+    const url = rawUrl.trim();
+    const filesPrefix = `${env.API_PREFIX}/files/`;
+    if (url.startsWith(filesPrefix)) {
+      const match = /^([A-Za-z0-9_-]+)\/download$/.exec(url.slice(filesPrefix.length));
+      const file = match ? await this.repo.findStoredFile(companyId, match[1]!) : null;
+      if (!file) throw new ValidationError('Resume file not found');
+      return url;
+    }
+    try {
+      if (new URL(url).protocol === 'https:') return url;
+    } catch {
+      // fall through to the validation error below
+    }
+    throw new ValidationError('resumeUrl must be an uploaded company file or an https URL');
   }
 
   private canApprove(actor: AuthActor): boolean {
@@ -184,7 +224,7 @@ export class RecruitmentService {
     const { items, total } = await this.repo.listJobs(companyId, {
       page,
       pageSize,
-      status: params.status as never,
+      status: parseEnumParam(jobStatus, params.status, 'status'),
       departmentId: params.departmentId,
       search: params.search,
     });
@@ -335,6 +375,9 @@ export class RecruitmentService {
 
   async createCandidate(actor: AuthActor, input: CreateCandidateInput) {
     const companyId = await this.requireCompanyId(actor.id);
+    if (input.resumeUrl) {
+      input = { ...input, resumeUrl: await this.assertResumeUrl(companyId, input.resumeUrl) };
+    }
     try {
       const candidate = await this.repo.createCandidate(companyId, input);
       await this.repo.createAuditLog({
@@ -353,6 +396,9 @@ export class RecruitmentService {
     const companyId = await this.requireCompanyId(actor.id);
     const existing = await this.repo.findCandidate(companyId, id);
     if (!existing) throw new NotFoundError('Candidate not found');
+    if (input.resumeUrl && input.resumeUrl !== existing.resumeUrl) {
+      input = { ...input, resumeUrl: await this.assertResumeUrl(companyId, input.resumeUrl) };
+    }
     try {
       const candidate = await this.repo.updateCandidate(id, input);
       await this.repo.createAuditLog({
@@ -385,7 +431,8 @@ export class RecruitmentService {
     const companyId = await this.requireCompanyId(actor.id);
     const existing = await this.repo.findCandidate(companyId, id);
     if (!existing) throw new NotFoundError('Candidate not found');
-    const candidate = await this.repo.attachResume(id, input);
+    const resumeUrl = await this.assertResumeUrl(companyId, input.resumeUrl);
+    const candidate = await this.repo.attachResume(id, { ...input, resumeUrl });
     await this.repo.createAuditLog({
       actorId: actor.id,
       action: 'recruitment.candidate.attach_resume',
@@ -410,7 +457,7 @@ export class RecruitmentService {
     const { items, total } = await this.repo.listApplications(companyId, {
       page,
       pageSize,
-      status: params.status as never,
+      status: parseEnumParam(applicationStatus, params.status, 'status'),
       jobOpeningId: params.jobOpeningId,
       candidateId: params.candidateId,
     });
@@ -507,7 +554,7 @@ export class RecruitmentService {
     const { items, total } = await this.repo.listInterviews(companyId, {
       page,
       pageSize,
-      status: params.status as never,
+      status: parseEnumParam(interviewStatus, params.status, 'status'),
       applicationId: params.applicationId,
     });
     return { items, pagination: paginationMeta(page, pageSize, total) };
@@ -604,7 +651,7 @@ export class RecruitmentService {
     const { items, total } = await this.repo.listOffers(companyId, {
       page,
       pageSize,
-      status: params.status as never,
+      status: parseEnumParam(offerStatus, params.status, 'status'),
       applicationId: params.applicationId,
     });
     return { items, pagination: paginationMeta(page, pageSize, total) };
@@ -651,11 +698,11 @@ export class RecruitmentService {
     const companyId = await this.requireCompanyId(actor.id);
     const existing = await this.repo.findOffer(companyId, id);
     if (!existing) throw new NotFoundError('Offer not found');
-    if (existing.status !== 'DRAFT' && input.status === undefined) {
-      // Allow limited updates on non-draft only via explicit status or notes already handled
-    }
     if (['ACCEPTED', 'DECLINED', 'WITHDRAWN', 'EXPIRED'].includes(existing.status)) {
       throw new ValidationError('Cannot update a finalized offer');
+    }
+    if (existing.status !== 'DRAFT' && (input.salary !== undefined || input.currency !== undefined)) {
+      throw new ValidationError('Compensation cannot be changed once an offer has been sent');
     }
     const offer = await this.repo.updateOffer(id, input);
     await this.repo.createAuditLog({

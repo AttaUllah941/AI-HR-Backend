@@ -2,9 +2,9 @@ import { Router } from 'express';
 import { asyncHandler } from '../../middleware/async-handler.js';
 import { authMiddleware } from '../../middleware/auth.middleware.js';
 import { requirePermissions } from '../../middleware/rbac.middleware.js';
-import { validateBody } from '../../middleware/validate.middleware.js';
+import { validateBody, validateQuery } from '../../middleware/validate.middleware.js';
 import { ReportsController } from './controllers/reports.controller.js';
-import { exportReportSchema } from './validators/reports.validators.js';
+import { exportReportSchema, reportQuerySchema } from './validators/reports.validators.js';
 
 const controller = new ReportsController();
 
@@ -16,23 +16,37 @@ reportsRouter.get('/summary', requirePermissions('reports:view'), asyncHandler(c
 reportsRouter.get(
   '/attendance',
   requirePermissions('reports:view'),
+  validateQuery(reportQuerySchema),
   asyncHandler(controller.attendance),
 );
-reportsRouter.get('/leave', requirePermissions('reports:view'), asyncHandler(controller.leave));
-reportsRouter.get('/payroll', requirePermissions('reports:view'), asyncHandler(controller.payroll));
+reportsRouter.get(
+  '/leave',
+  requirePermissions('reports:view'),
+  validateQuery(reportQuerySchema),
+  asyncHandler(controller.leave),
+);
+reportsRouter.get(
+  '/payroll',
+  requirePermissions('reports:view'),
+  validateQuery(reportQuerySchema),
+  asyncHandler(controller.payroll),
+);
 reportsRouter.get(
   '/recruitment',
   requirePermissions('reports:view'),
+  validateQuery(reportQuerySchema),
   asyncHandler(controller.recruitment),
 );
 reportsRouter.get(
   '/performance',
   requirePermissions('reports:view'),
+  validateQuery(reportQuerySchema),
   asyncHandler(controller.performance),
 );
 reportsRouter.get(
   '/employees',
   requirePermissions('reports:view'),
+  validateQuery(reportQuerySchema),
   asyncHandler(controller.employees),
 );
 reportsRouter.get(
@@ -50,5 +64,6 @@ reportsRouter.post(
 reportsRouter.get(
   '/export',
   requirePermissions('reports:export'),
-  asyncHandler(controller.exportReport),
+  validateQuery(exportReportSchema),
+  asyncHandler(controller.exportReportFromQuery),
 );

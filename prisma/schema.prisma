@@ -840,6 +840,7 @@ model LeaveRequest {
   leaveType LeaveType @relation(fields: [leaveTypeId], references: [id], onDelete: Restrict)
 
   @@index([companyId, status])
+  @@index([companyId, startDate])
   @@index([employeeId, startDate])
   @@index([leaveTypeId])
   @@index([deletedAt])
@@ -1004,6 +1005,7 @@ model PayrollEntry {
 
   @@unique([payrollRunId, employeeId])
   @@index([companyId])
+  @@index([payrollRunId])
   @@index([employeeId])
   @@map("payroll_entries")
 }
@@ -1596,6 +1598,7 @@ enum ReportExportFormat {
   CSV
   PDF
   JSON
+  XLSX
 }
 
 model ReportExportLog {

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { env } from '../../config/env.js';
-import { ValidationError } from '../../utils/app-error.js';
+import { NotFoundError, ValidationError } from '../../utils/app-error.js';
 
 const ALLOWED_EXTENSIONS = new Set([
   '.pdf',
@@ -74,10 +74,53 @@ function sanitizeBaseName(name: string): string {
   return base.slice(0, 180) || 'file';
 }
 
+function startsWithBytes(buffer: Buffer, signature: number[], offset = 0): boolean {
+  if (buffer.length < offset + signature.length) return false;
+  return signature.every((byte, index) => buffer[offset + index] === byte);
+}
+
+/** True when the leading bytes of `buffer` are consistent with the claimed file extension. */
+export function matchesMagicBytes(extension: string, buffer: Buffer): boolean {
+  switch (extension) {
+    case '.pdf':
+      return startsWithBytes(buffer, [0x25, 0x50, 0x44, 0x46]); // %PDF
+    case '.png':
+      return startsWithBytes(buffer, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    case '.jpg':
+    case '.jpeg':
+      return startsWithBytes(buffer, [0xff, 0xd8, 0xff]);
+    case '.gif':
+      return (
+        startsWithBytes(buffer, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) || // GIF87a
+        startsWithBytes(buffer, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61]) // GIF89a
+      );
+    case '.webp':
+      return (
+        startsWithBytes(buffer, [0x52, 0x49, 0x46, 0x46]) && // RIFF
+        startsWithBytes(buffer, [0x57, 0x45, 0x42, 0x50], 8) // WEBP
+      );
+    case '.docx':
+    case '.xlsx':
+      return startsWithBytes(buffer, [0x50, 0x4b, 0x03, 0x04]); // zip container
+    case '.doc':
+    case '.xls':
+      return startsWithBytes(buffer, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]); // OLE2
+    case '.txt':
+    case '.csv': {
+      // Plain text must not contain NUL bytes in its leading chunk.
+      const head = buffer.subarray(0, 8192);
+      return !head.includes(0);
+    }
+    default:
+      return false;
+  }
+}
+
 export function validateUploadFile(input: {
   originalName: string;
   mimeType: string;
   sizeBytes: number;
+  buffer?: Buffer;
 }): { extension: string; safeOriginalName: string; mimeType: string } {
   if (!input.originalName?.trim()) {
     throw new ValidationError('File name is required');
@@ -105,6 +148,10 @@ export function validateUploadFile(input: {
   const hints = EXT_MIME_HINTS[extension] ?? [];
   if (hints.length && !hints.includes(mimeType)) {
     throw new ValidationError('File extension does not match its content type');
+  }
+
+  if (input.buffer && !matchesMagicBytes(extension, input.buffer)) {
+    throw new ValidationError('File content does not match its declared type');
   }
 
   return { extension, safeOriginalName, mimeType };
@@ -140,6 +187,7 @@ export class LocalFileStorage {
       originalName,
       mimeType,
       sizeBytes: buffer.length,
+      buffer,
     });
 
     const storedName = `${Date.now()}-${randomUUID()}${validated.extension}`;
@@ -163,7 +211,7 @@ export class LocalFileStorage {
   openReadStream(storageKey: string) {
     const absolute = this.resolveAbsolute(storageKey);
     if (!existsSync(absolute)) {
-      throw new ValidationError('Stored file is missing on disk');
+      throw new NotFoundError('Stored file is missing on disk');
     }
     return createReadStream(absolute);
   }

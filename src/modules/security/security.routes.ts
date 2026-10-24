@@ -2,9 +2,12 @@ import { Router } from 'express';
 import { asyncHandler } from '../../middleware/async-handler.js';
 import { authMiddleware } from '../../middleware/auth.middleware.js';
 import { requirePermissions } from '../../middleware/rbac.middleware.js';
-import { validateBody } from '../../middleware/validate.middleware.js';
+import { validateBody, validateQuery } from '../../middleware/validate.middleware.js';
 import { SecurityController } from './controllers/security.controller.js';
-import { updateSecurityPolicySchema } from './validators/security.validators.js';
+import {
+  listLoginAttemptsQuerySchema,
+  updateSecurityPolicySchema,
+} from './validators/security.validators.js';
 
 const controller = new SecurityController();
 
@@ -36,5 +39,6 @@ securityRouter.patch(
 securityRouter.get(
   '/login-attempts',
   requirePermissions('settings:view'),
+  validateQuery(listLoginAttemptsQuerySchema),
   asyncHandler(controller.listLoginAttempts),
 );

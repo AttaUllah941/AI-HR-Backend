@@ -31,14 +31,19 @@ Repos: Angular 21 · Node.js 22 · Express 5 · Prisma 7 · PostgreSQL 16
 | Variable | Rule |
 |----------|------|
 | `NODE_ENV` | Must be `production` |
-| `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | ≥ 32 chars, distinct, no weak markers (`change-me`, `example`, …). Startup refuses otherwise. |
-| `DATABASE_URL` | Point at managed Postgres or compose service `postgres` |
+| `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | ≥ 32 chars, distinct, no weak markers (`change-me`, `example`, `replace-with`, `openssl-rand`, …). Startup refuses otherwise. Generate with `openssl rand -hex 32`. |
+| `MFA_ENCRYPTION_KEY` | **Required.** 32 bytes as 64 hex chars or base64 (`openssl rand -hex 32`). AES-256-GCM key for MFA secrets at rest (`enc:v1:` prefix). Legacy plaintext secrets are re-encrypted on the next successful MFA verify. Outside production it falls back to a key derived from `JWT_ACCESS_SECRET`. Losing/changing the key invalidates stored MFA secrets. |
+| `EMAIL_PROVIDER` | Must be `smtp`. `console` logs temporary passwords/reset links, so startup refuses unless `ALLOW_CONSOLE_EMAIL=true` (staging only). |
+| `DATABASE_URL` | Compose **overrides** this from `POSTGRES_*` when using docker-compose — keep password values aligned |
 | `CORS_ORIGIN` | Exact public web origin(s), comma-separated |
 | `APP_URL` | Public SPA URL |
-| `FILE_STORAGE_ROOT` | Persist via volume (`/app/uploads` in compose) |
+| `FILE_STORAGE_ROOT` | Persist via volume (`/app/uploads` in compose); entrypoint chowns for non-root |
+| `LOG_TO_FILE` | Optional (`true` to write Winston files under `/app/logs`; prod defaults to stdout only) |
 | `AI_API_KEY` / `EMAIL_*` | Server-side only — never ship to Angular |
 
-Frontend production builds use relative `apiBaseUrl: '/api/v1'` so the browser talks to the same origin; nginx proxies `/api/` to the API service.
+Frontend production builds use relative `apiBaseUrl: '/api/v1'` so the browser talks to the same origin; nginx proxies `/api/` to the API service (`client_max_body_size` 11m to match `FILE_MAX_BYTES`).
+
+**Layout:** Compose builds the web image from `../AI-HR-Frontend/AI-HR-Frontend` (sibling of the backend repo).
 
 ## Deploy with Docker Compose
 
@@ -49,27 +54,36 @@ From `AI-HR-Backend` (frontend path is relative):
 cp .env.example .env   # set strong JWTs even for local compose
 docker compose up -d --build
 
-# Production overlays (Postgres not published; uses .env.production)
+# Production overlays (Postgres + API not published; traffic via web/nginx)
 cp .env.production.example .env.production
-# edit secrets…
+# edit secrets (openssl rand -hex 32 for JWTs)…
 docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --build
 ```
 
-Verify:
+Verify (production overlay — hit nginx, not the API host port):
 
 ```bash
-curl -s http://localhost:3000/api/v1/health/live
-curl -s http://localhost:3000/api/v1/health/ready
 curl -s http://localhost:8080/healthz
+curl -s http://localhost:8080/api/v1/health/live
+curl -s http://localhost:8080/api/v1/health/ready
 ```
+
+For local base compose (API published), you can also use `http://localhost:3000/api/v1/health/*`.
 
 Open the SPA at `http://localhost:8080` (or your `WEB_PORT`).
 
-API container runs `prisma migrate deploy` before listening. Seed separately when needed:
+API container runs `prisma migrate deploy` before listening. The production image does **not** include `tsx`, so seed from the host or a one-off Node image:
 
 ```bash
-docker compose exec api npx prisma db seed
+# From AI-HR-Backend with .env pointing at compose Postgres
+npm run prisma:seed
+
+# Or one-off (dev deps available):
+docker compose run --rm --entrypoint "" -e DATABASE_URL=postgresql://zenith:…@postgres:5432/zenith_hr?schema=public api \
+  sh -c "npm install tsx --no-save && npx prisma db seed"
 ```
+
+Do **not** run the demo seed against a real production tenant without rotating those passwords.
 
 ## CI/CD
 
@@ -92,16 +106,16 @@ Suggested release flow:
 
 | Signal | Where |
 |--------|-------|
-| Structured JSON logs (prod) | stdout + `logs/combined.log` / `logs/error.log` (volume `zenith_api_logs`) |
+| Structured JSON logs (prod) | stdout by default; set `LOG_TO_FILE=true` for `logs/*.log` (volume `zenith_api_logs`) |
 | Access logs | Morgan → Winston (`rid=` request id) |
 | Correlation | `X-Request-Id` request/response header |
-| Liveness | `GET /api/v1/health/live` |
-| Readiness | `GET /api/v1/health/ready` |
+| Liveness | `GET /api/v1/health/live` (excluded from global rate limit) |
+| Readiness | `GET /api/v1/health/ready` (excluded from global rate limit) |
 | Full health | `GET /api/v1/health` |
-| Process metrics | `GET /api/v1/health/metrics` (uptime, memory) |
+| Process metrics | `GET /api/v1/health/metrics` (uptime, memory; keep API internal) |
 | Web probe | `GET /healthz` on nginx |
 
-Wire your orchestrator/LB health checks to **live** (restart decision) and **ready** (traffic decision). Scrape **metrics** with your preferred agent or synthetic monitor; for Prometheus-native exporters, add a sidecar later if needed.
+Wire your orchestrator/LB health checks to **live** (restart decision) and **ready** (traffic decision). Scrape **metrics** with your preferred agent or synthetic monitor; for Prometheus-native exporters, add a sidecar later if needed. Prefer terminating TLS (and optional HSTS) at the load balancer in front of nginx.
 
 ## Database backup strategy
 
@@ -117,7 +131,7 @@ Recommendations:
 - Test restore quarterly: `gunzip -c file.sql.gz | psql $DATABASE_URL`
 - Prefer provider snapshots (RDS, Cloud SQL, Azure Flexible Server) **plus** logical dumps
 - Encrypt backups at rest; never store dumps in the git repo (`backups/` is gitignored)
-- Production compose overlay uses `ports: !reset []` on Postgres so the DB is not published on the host (requires Docker Compose v2.24+)
+- Production compose overlay uses `ports: !reset []` on **Postgres and API** so only nginx (`web`) is published (requires Docker Compose v2.24+)
 
 ## API surface (ops)
 
@@ -136,17 +150,18 @@ Full module tables remain in the root `README.md`.
 
 - [ ] Strong, unique JWT secrets set; app starts without secret assertion failure
 - [ ] `NODE_ENV=production`; CORS locked to real origins
-- [ ] TLS terminated at load balancer / reverse proxy in front of nginx
-- [ ] Postgres not exposed publicly; credentials rotated from defaults
-- [ ] Persistent volumes for Postgres data + API uploads (+ logs if retained)
+- [ ] TLS terminated at load balancer / reverse proxy in front of nginx (HSTS at the edge)
+- [ ] Postgres **and** API not exposed publicly; credentials rotated from defaults
+- [ ] Persistent volumes for Postgres data + API uploads (+ logs if `LOG_TO_FILE=true`)
 - [ ] Migrations applied (`migrate deploy` on API start or release job)
-- [ ] Backup job scheduled and restore tested
-- [ ] Health checks configured (live/ready)
+- [ ] Backup job scheduled and restore tested (`.sql.gz` via compose/script)
+- [ ] Health checks configured (live/ready) through nginx or internal network
 - [ ] CI green on the release commit
-- [ ] Demo passwords changed or seed disabled in production
+- [ ] Demo passwords changed or seed skipped in production
 - [ ] AI/email providers configured or left on safe mocks/console sinks intentionally
-- [ ] Rate limits reviewed for expected traffic
+- [ ] Rate limits reviewed for expected traffic (health paths are skipped)
 - [ ] Log aggregation / alerting hooked to error volume and 5xx rates
+- [ ] nginx `client_max_body_size` ≥ API `FILE_MAX_BYTES`
 
 ## Known local limitations
 

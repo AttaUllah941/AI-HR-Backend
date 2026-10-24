@@ -3,6 +3,8 @@ import { successResponse } from '../../../interfaces/api-response.js';
 import { NotificationsService } from '../services/notifications.service.js';
 import type {
   CreateTemplateInput,
+  FeedQueryInput,
+  ListNotificationsQueryInput,
   RegisterDeviceInput,
   SendNotificationInput,
   UpdateTemplateInput,
@@ -26,15 +28,15 @@ export class NotificationsController {
   };
 
   feed = async (req: Request, res: Response): Promise<void> => {
-    const limit = req.query.limit ? Number(req.query.limit) : 8;
-    const data = await this.service.getFeed(this.actor(req), limit);
+    const query = req.query as unknown as FeedQueryInput;
+    const data = await this.service.getFeed(this.actor(req), query.limit ?? 8);
     res.json(successResponse(data, 'Notification feed'));
   };
 
   list = async (req: Request, res: Response): Promise<void> => {
     const data = await this.service.list(
       this.actor(req),
-      req.query as Record<string, string>,
+      req.query as unknown as ListNotificationsQueryInput,
     );
     res.json(successResponse(data, 'Notifications'));
   };

@@ -21,9 +21,19 @@ export class DashboardController {
     res.json(successResponse(data, 'Dashboard summary'));
   };
 
+  greeting = async (req: Request, res: Response): Promise<void> => {
+    const dbUser = await this.authRepo.findById(req.user!.id);
+    const data = await this.service.getGreeting({
+      id: req.user!.id,
+      email: req.user!.email,
+      firstName: dbUser?.firstName,
+    });
+    res.json(successResponse(data, 'Dashboard greeting'));
+  };
+
   activity = async (req: Request, res: Response): Promise<void> => {
     const limit = Number(req.query.limit ?? 12);
-    const data = await this.service.getActivity(Number.isFinite(limit) ? limit : 12);
+    const data = await this.service.getActivity(req.user!.id, Number.isFinite(limit) ? limit : 12);
     res.json(successResponse(data, 'Recent activity'));
   };
 

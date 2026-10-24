@@ -6,6 +6,7 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../../utils/app-error.js';
+import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import {
   AttendanceRepository,
   type AttendanceListQuery,
@@ -35,6 +36,15 @@ function parseTimeOnDate(day: Date, hhmm: string): Date {
   return new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), h, m, 0, 0));
 }
 
+function parseDateParam(value: string | undefined, name: string): Date | undefined {
+  if (value === undefined || value === '') return undefined;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new ValidationError(`Invalid ${name}: expected an ISO date (YYYY-MM-DD)`);
+  }
+  return startOfUtcDay(parsed);
+}
+
 function minutesBetween(start: Date, end: Date): number {
   return Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
 }
@@ -60,6 +70,43 @@ export class AttendanceService {
       throw new ConflictError(message);
     }
     throw error;
+  }
+
+  /** Holders of attendance:update or attendance:approve may act on other employees' records. */
+  private canManageOthers(actor: AuthActor): boolean {
+    return (
+      actor.permissions.includes('attendance:update') ||
+      actor.permissions.includes('attendance:approve')
+    );
+  }
+
+  /** Returns the employee id a read must be limited to, or null when the actor can see everyone. */
+  private async readScopeEmployeeId(companyId: string, actor: AuthActor): Promise<string | null> {
+    if (this.canManageOthers(actor)) return null;
+    const linked = await this.repo.findEmployeeByUserId(companyId, actor.id);
+    // Sentinel that never matches a record when the user has no employee profile.
+    return linked?.id ?? '__none__';
+  }
+
+  private async assertShiftInCompany(companyId: string, shiftId?: string | null): Promise<void> {
+    if (!shiftId) return;
+    const shift = await this.repo.findShift(companyId, shiftId);
+    if (!shift) throw new ValidationError('Invalid shift');
+  }
+
+  private async resolveWritableEmployeeId(
+    companyId: string,
+    actor: AuthActor,
+    employeeId?: string | null,
+  ): Promise<string> {
+    const target = await this.resolveEmployeeId(companyId, actor.id, employeeId);
+    if (!this.canManageOthers(actor)) {
+      const self = await this.repo.findEmployeeByUserId(companyId, actor.id);
+      if (!self || self.id !== target) {
+        throw new ForbiddenError('You can only create attendance records for your own employee profile');
+      }
+    }
+    return target;
   }
 
   private async resolveSelfEmployeeId(companyId: string, actorId: string): Promise<string> {
@@ -163,8 +210,12 @@ export class AttendanceService {
       workMinutes = minutesBetween(input.checkInAt, input.checkOutAt);
       if (shift) {
         workMinutes = Math.max(0, workMinutes - shift.breakMinutes);
-        const expectedEnd = parseTimeOnDate(day, shift.endTime);
         const expectedStart = parseTimeOnDate(day, shift.startTime);
+        let expectedEnd = parseTimeOnDate(day, shift.endTime);
+        if (expectedEnd <= expectedStart) {
+          // Overnight shift: ends on the following day.
+          expectedEnd = new Date(expectedEnd.getTime() + 24 * 60 * 60000);
+        }
         let expectedWork = minutesBetween(expectedStart, expectedEnd) - shift.breakMinutes;
         if (expectedWork < 0) expectedWork = 0;
         overtimeMinutes = Math.max(0, workMinutes - expectedWork);
@@ -201,15 +252,15 @@ export class AttendanceService {
       status: (params.status as AttendanceStatus | undefined) || undefined,
       employeeId: params.employeeId || undefined,
       departmentId: params.departmentId || undefined,
-      dateFrom: params.dateFrom ? startOfUtcDay(new Date(params.dateFrom)) : undefined,
-      dateTo: params.dateTo ? startOfUtcDay(new Date(params.dateTo)) : undefined,
+      dateFrom: parseDateParam(params.dateFrom, 'dateFrom'),
+      dateTo: parseDateParam(params.dateTo, 'dateTo'),
       sortDir: params.sortDir === 'asc' ? 'asc' : 'desc',
     };
   }
 
   async getSummary(actor: AuthActor, date?: string) {
     const companyId = await this.requireCompanyId(actor.id);
-    const day = startOfUtcDay(date ? new Date(date) : new Date());
+    const day = parseDateParam(date, 'date') ?? startOfUtcDay(new Date());
     const rows = await this.repo.summaryCounts(companyId, day, day);
     const byStatus: Record<string, number> = {};
     let workMinutes = 0;
@@ -239,6 +290,8 @@ export class AttendanceService {
   async list(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
     const query = this.parseListQuery(params);
+    const scopeEmployeeId = await this.readScopeEmployeeId(companyId, actor);
+    if (scopeEmployeeId) query.employeeId = scopeEmployeeId;
     const [items, total] = await this.repo.listAttendance(companyId, query);
     return {
       items,
@@ -255,6 +308,10 @@ export class AttendanceService {
     const companyId = await this.requireCompanyId(actor.id);
     const record = await this.repo.findAttendance(companyId, id);
     if (!record) throw new NotFoundError('Attendance record not found');
+    const scopeEmployeeId = await this.readScopeEmployeeId(companyId, actor);
+    if (scopeEmployeeId && record.employeeId !== scopeEmployeeId) {
+      throw new NotFoundError('Attendance record not found');
+    }
     return record;
   }
 
@@ -269,11 +326,13 @@ export class AttendanceService {
 
   async create(actor: AuthActor, input: CreateAttendanceInput) {
     const companyId = await this.requireCompanyId(actor.id);
-    await this.resolveEmployeeId(companyId, actor.id, input.employeeId);
+    const employeeId = await this.resolveWritableEmployeeId(companyId, actor, input.employeeId);
+    await this.assertShiftInCompany(companyId, input.shiftId);
     const metrics = await this.computeMetrics(companyId, input);
     try {
       const record = await this.repo.createAttendance(companyId, {
         ...input,
+        employeeId,
         date: metrics.day,
         shiftId: metrics.shiftId,
         status: metrics.status,
@@ -299,22 +358,36 @@ export class AttendanceService {
     const existing = await this.repo.findAttendance(companyId, id);
     if (!existing) throw new NotFoundError('Attendance record not found');
 
+    if (input.shiftId) await this.assertShiftInCompany(companyId, input.shiftId);
+
+    // Preserve statuses that are not derived from clock times.
+    const preservedStatus =
+      input.status === undefined &&
+      (existing.status === 'REMOTE' || existing.status === 'ON_LEAVE')
+        ? existing.status
+        : input.status;
+
     const metrics = await this.computeMetrics(companyId, {
       date: input.date ?? existing.date,
       checkInAt: input.checkInAt !== undefined ? input.checkInAt : existing.checkInAt,
       checkOutAt: input.checkOutAt !== undefined ? input.checkOutAt : existing.checkOutAt,
       shiftId: input.shiftId !== undefined ? input.shiftId : existing.shiftId,
-      status: input.status,
+      status: preservedStatus,
     });
 
-    const record = await this.repo.updateAttendance(id, {
-      ...input,
-      shiftId: metrics.shiftId,
-      status: metrics.status,
-      workMinutes: metrics.workMinutes,
-      overtimeMinutes: metrics.overtimeMinutes,
-      lateMinutes: metrics.lateMinutes,
-    });
+    let record;
+    try {
+      record = await this.repo.updateAttendance(id, {
+        ...input,
+        shiftId: metrics.shiftId,
+        status: metrics.status,
+        workMinutes: metrics.workMinutes,
+        overtimeMinutes: metrics.overtimeMinutes,
+        lateMinutes: metrics.lateMinutes,
+      });
+    } catch (error) {
+      this.rethrowUnique(error, 'Attendance already exists for this employee and date');
+    }
     await this.repo.createAuditLog({
       actorId: actor.id,
       action: 'attendance.update',
@@ -356,7 +429,7 @@ export class AttendanceService {
     });
 
     if (existing) {
-      const record = await this.repo.updateAttendance(existing.id, {
+      const record = await this.repo.updateAttendanceIf(existing.id, companyId, { checkInAt: null }, {
         checkInAt: at,
         checkInIp: context.clientIp,
         shiftId: metrics.shiftId,
@@ -367,6 +440,7 @@ export class AttendanceService {
         notes: input.notes,
         source: 'CLOCK',
       });
+      if (!record) throw new ConflictError('Already clocked in for today');
       await this.repo.createAuditLog({
         actorId: actor.id,
         action: 'attendance.clock_in',
@@ -426,7 +500,7 @@ export class AttendanceService {
       shiftId: existing.shiftId,
     });
 
-    const record = await this.repo.updateAttendance(existing.id, {
+    const record = await this.repo.updateAttendanceIf(existing.id, companyId, { checkOutAt: null }, {
       checkOutAt: at,
       checkOutIp: context.clientIp,
       status: metrics.status,
@@ -436,6 +510,7 @@ export class AttendanceService {
       notes: input.notes ?? existing.notes,
       source: 'CLOCK',
     });
+    if (!record) throw new ConflictError('Already clocked out for today');
     await this.repo.createAuditLog({
       actorId: actor.id,
       action: 'attendance.clock_out',
@@ -448,11 +523,16 @@ export class AttendanceService {
 
   async getTimesheet(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const employeeId = await this.resolveEmployeeId(companyId, actor.id, params.employeeId);
-    const dateTo = startOfUtcDay(params.dateTo ? new Date(params.dateTo) : new Date());
-    const dateFrom = params.dateFrom
-      ? startOfUtcDay(new Date(params.dateFrom))
-      : new Date(Date.UTC(dateTo.getUTCFullYear(), dateTo.getUTCMonth(), 1));
+    const scopeEmployeeId = await this.readScopeEmployeeId(companyId, actor);
+    const employeeId = await this.resolveEmployeeId(
+      companyId,
+      actor.id,
+      scopeEmployeeId ? null : params.employeeId,
+    );
+    const dateTo = parseDateParam(params.dateTo, 'dateTo') ?? startOfUtcDay(new Date());
+    const dateFrom =
+      parseDateParam(params.dateFrom, 'dateFrom') ??
+      new Date(Date.UTC(dateTo.getUTCFullYear(), dateTo.getUTCMonth(), 1));
     const items = await this.repo.timesheet(companyId, employeeId, dateFrom, dateTo);
     const totals = items.reduce(
       (acc, row) => {
@@ -550,20 +630,33 @@ export class AttendanceService {
   }
 
   // Overtime
-  async listOvertime(actor: AuthActor, status?: string) {
+  async listOvertime(actor: AuthActor, params: Record<string, unknown> = {}) {
     const companyId = await this.requireCompanyId(actor.id);
-    return {
-      items: await this.repo.listOvertime(
-        companyId,
-        status as 'PENDING' | 'APPROVED' | 'REJECTED' | undefined,
-      ),
-    };
+    const { page, pageSize } = parsePagination(params, { maxPageSize: 100 });
+    const status =
+      typeof params.status === 'string' && params.status
+        ? (params.status as 'PENDING' | 'APPROVED' | 'REJECTED')
+        : undefined;
+    const scopeEmployeeId = await this.readScopeEmployeeId(companyId, actor);
+    const [items, total] = await this.repo.listOvertime(companyId, {
+      status,
+      employeeId: scopeEmployeeId ?? undefined,
+      page,
+      pageSize,
+    });
+    return { items, pagination: paginationMeta(page, pageSize, total) };
   }
 
   async createOvertime(actor: AuthActor, input: CreateOvertimeInput) {
     const companyId = await this.requireCompanyId(actor.id);
-    await this.resolveEmployeeId(companyId, actor.id, input.employeeId);
-    const request = await this.repo.createOvertime(companyId, input);
+    const employeeId = await this.resolveWritableEmployeeId(companyId, actor, input.employeeId);
+    if (input.attendanceId) {
+      const attendance = await this.repo.findAttendance(companyId, input.attendanceId);
+      if (!attendance || attendance.employeeId !== employeeId) {
+        throw new ValidationError('Invalid attendance record for this employee');
+      }
+    }
+    const request = await this.repo.createOvertime(companyId, { ...input, employeeId });
     await this.repo.createAuditLog({
       actorId: actor.id,
       action: 'attendance.overtime.create',
@@ -573,12 +666,25 @@ export class AttendanceService {
     return request;
   }
 
+  private async assertNotSelfReview(
+    companyId: string,
+    actor: AuthActor,
+    requesterEmployeeId: string,
+  ): Promise<void> {
+    const self = await this.repo.findEmployeeByUserId(companyId, actor.id);
+    if (self && self.id === requesterEmployeeId) {
+      throw new ForbiddenError('You cannot review your own overtime request');
+    }
+  }
+
   async approveOvertime(actor: AuthActor, id: string, input: ReviewOvertimeInput) {
     const companyId = await this.requireCompanyId(actor.id);
     const existing = await this.repo.findOvertime(companyId, id);
     if (!existing) throw new NotFoundError('Overtime request not found');
     if (existing.status !== 'PENDING') throw new ValidationError('Request already reviewed');
+    await this.assertNotSelfReview(companyId, actor, existing.employeeId);
     const updated = await this.repo.reviewOvertime(id, 'APPROVED', actor.id, input.reviewNotes);
+    if (!updated) throw new ValidationError('Request already reviewed');
     await this.repo.createAuditLog({
       actorId: actor.id,
       action: 'attendance.overtime.approve',
@@ -593,7 +699,9 @@ export class AttendanceService {
     const existing = await this.repo.findOvertime(companyId, id);
     if (!existing) throw new NotFoundError('Overtime request not found');
     if (existing.status !== 'PENDING') throw new ValidationError('Request already reviewed');
+    await this.assertNotSelfReview(companyId, actor, existing.employeeId);
     const updated = await this.repo.reviewOvertime(id, 'REJECTED', actor.id, input.reviewNotes);
+    if (!updated) throw new ValidationError('Request already reviewed');
     await this.repo.createAuditLog({
       actorId: actor.id,
       action: 'attendance.overtime.reject',
@@ -605,10 +713,10 @@ export class AttendanceService {
 
   async getReport(actor: AuthActor, params: Record<string, string | undefined>) {
     const companyId = await this.requireCompanyId(actor.id);
-    const dateTo = startOfUtcDay(params.dateTo ? new Date(params.dateTo) : new Date());
-    const dateFrom = params.dateFrom
-      ? startOfUtcDay(new Date(params.dateFrom))
-      : new Date(Date.UTC(dateTo.getUTCFullYear(), dateTo.getUTCMonth(), dateTo.getUTCDate() - 6));
+    const dateTo = parseDateParam(params.dateTo, 'dateTo') ?? startOfUtcDay(new Date());
+    const dateFrom =
+      parseDateParam(params.dateFrom, 'dateFrom') ??
+      new Date(Date.UTC(dateTo.getUTCFullYear(), dateTo.getUTCMonth(), dateTo.getUTCDate() - 6));
     const rows = await this.repo.summaryCounts(companyId, dateFrom, dateTo);
     return {
       dateFrom: dateFrom.toISOString(),

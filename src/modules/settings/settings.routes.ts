@@ -2,10 +2,12 @@ import { Router } from 'express';
 import { asyncHandler } from '../../middleware/async-handler.js';
 import { authMiddleware } from '../../middleware/auth.middleware.js';
 import { requirePermissions } from '../../middleware/rbac.middleware.js';
-import { validateBody } from '../../middleware/validate.middleware.js';
+import { validateBody, validateQuery } from '../../middleware/validate.middleware.js';
 import { SettingsController } from './controllers/settings.controller.js';
 import {
   createUserSchema,
+  listAuditLogsQuerySchema,
+  listUsersQuerySchema,
   updateCompanySchema,
   updateEmailSettingsSchema,
   updateIntegrationsSchema,
@@ -57,7 +59,12 @@ settingsRouter.patch(
   asyncHandler(controller.updateSystem),
 );
 
-settingsRouter.get('/users', requirePermissions('users:view'), asyncHandler(controller.listUsers));
+settingsRouter.get(
+  '/users',
+  requirePermissions('users:view'),
+  validateQuery(listUsersQuerySchema),
+  asyncHandler(controller.listUsers),
+);
 settingsRouter.post(
   '/users',
   requirePermissions('users:create'),
@@ -89,4 +96,9 @@ settingsRouter.put(
   asyncHandler(controller.updateRolePermissions),
 );
 
-settingsRouter.get('/audit-logs', requirePermissions('settings:view'), asyncHandler(controller.listAuditLogs));
+settingsRouter.get(
+  '/audit-logs',
+  requirePermissions('settings:view'),
+  validateQuery(listAuditLogsQuerySchema),
+  asyncHandler(controller.listAuditLogs),
+);

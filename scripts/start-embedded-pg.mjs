@@ -27,7 +27,17 @@ async function main() {
     console.log('Postgres cluster initialised at', databaseDir);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.log('Using existing Postgres data directory (or initialise note):', message);
+    // Empty leftover dirs (no pg_control) make initdb fail; wipe and retry once.
+    if (/exists but is not empty|could not find the database system|pg_control/i.test(message)) {
+      console.warn('Postgres data directory looks incomplete — recreating…');
+      const { rmSync } = await import('node:fs');
+      rmSync(databaseDir, { recursive: true, force: true });
+      mkdirSync(databaseDir, { recursive: true });
+      await pg.initialise();
+      console.log('Postgres cluster re-initialised at', databaseDir);
+    } else {
+      console.log('Using existing Postgres data directory (or initialise note):', message);
+    }
   }
 
   await pg.start();

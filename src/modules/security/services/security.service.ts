@@ -7,7 +7,7 @@ import {
   normalizeIpAllowlist,
 } from '../../../utils/security.js';
 import { SecurityRepository } from '../repositories/security.repository.js';
-import type { UpdateSecurityPolicyInput } from '../validators/security.validators.js';
+import type { UpdateSecurityPolicyInput, ListLoginAttemptsQueryInput } from '../validators/security.validators.js';
 import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 
 type AuthActor = { id: string; permissions: string[] };
@@ -158,6 +158,10 @@ export class SecurityService {
           max: env.RATE_LIMIT_MAX,
         },
         authRateLimit: { windowMs: 15 * 60 * 1000, max: 20 },
+        refreshRateLimit: {
+          windowMs: 15 * 60 * 1000,
+          max: DEFAULT_SECURITY_POLICY.refreshRateLimitPerWindow,
+        },
         jwtAccessExpiresIn: env.JWT_ACCESS_EXPIRES_IN,
         jwtRefreshExpiresIn: env.JWT_REFRESH_EXPIRES_IN,
         jwtSecretsLookStrong:
@@ -170,6 +174,7 @@ export class SecurityService {
 
   async getReview(actor: AuthActor) {
     const status = await this.getStatus(actor);
+    const policy = status.policy;
     const checks = [
       {
         id: 'helmet',
@@ -182,14 +187,14 @@ export class SecurityService {
         title: 'CORS allowlist',
         status: status.runtime.corsConfigured ? ('pass' as const) : ('warn' as const),
         detail: status.runtime.corsConfigured
-          ? `Origins: ${env.CORS_ORIGIN}`
+          ? 'CORS_ORIGIN is configured.'
           : 'CORS_ORIGIN is empty.',
       },
       {
         id: 'rate-limit',
         title: 'Global + auth rate limiting',
         status: 'pass' as const,
-        detail: `Global ${status.runtime.globalRateLimit.max}/${status.runtime.globalRateLimit.windowMs}ms; auth 20/15m.`,
+        detail: `Global ${status.runtime.globalRateLimit.max}/${status.runtime.globalRateLimit.windowMs}ms; auth 20/15m; refresh ${status.runtime.refreshRateLimit.max}/15m.`,
       },
       {
         id: 'jwt-secrets',
@@ -200,31 +205,56 @@ export class SecurityService {
           : 'JWT secrets appear weak, default, or identical.',
       },
       {
+        id: 'production-env',
+        title: 'Production environment',
+        status: status.runtime.isProduction
+          ? ('pass' as const)
+          : ('warn' as const),
+        detail: status.runtime.isProduction
+          ? 'NODE_ENV is production.'
+          : `NODE_ENV is ${status.runtime.nodeEnv} (production secret checks are skipped).`,
+      },
+      {
+        id: 'password-policy',
+        title: 'Password policy strength',
+        status:
+          policy.passwordMinLength >= 10 &&
+          policy.passwordRequireLetter &&
+          policy.passwordRequireNumber
+            ? ('pass' as const)
+            : policy.passwordMinLength >= 8
+              ? ('warn' as const)
+              : ('fail' as const),
+        detail: `Min ${policy.passwordMinLength}; letter=${policy.passwordRequireLetter}; number=${policy.passwordRequireNumber}; special=${policy.passwordRequireSpecial}.`,
+      },
+      {
         id: 'mfa-coverage',
         title: 'MFA adoption',
         status:
-          status.metrics.mfaCoveragePct >= 50
-            ? ('pass' as const)
-            : status.metrics.mfaCoveragePct > 0
-              ? ('warn' as const)
-              : ('warn' as const),
+          status.metrics.mfaCoveragePct >= 50 ? ('pass' as const) : ('warn' as const),
         detail: `${status.metrics.mfaEnabled}/${status.metrics.users} users (${status.metrics.mfaCoveragePct}%).`,
       },
       {
         id: 'privileged-mfa',
         title: 'Privileged accounts with MFA',
         status:
-          status.metrics.privilegedWithoutMfa === 0 ? ('pass' as const) : ('warn' as const),
+          status.metrics.privilegedWithoutMfa === 0
+            ? ('pass' as const)
+            : policy.requireMfaForPrivileged
+              ? ('fail' as const)
+              : ('warn' as const),
         detail:
           status.metrics.privilegedWithoutMfa === 0
             ? 'All Super Admin / HR Admin accounts have MFA.'
-            : `${status.metrics.privilegedWithoutMfa} privileged account(s) without MFA.`,
+            : `${status.metrics.privilegedWithoutMfa} privileged account(s) without MFA${
+                policy.requireMfaForPrivileged ? ' (policy requires MFA)' : ''
+              }.`,
       },
       {
         id: 'lockouts',
         title: 'Account lockouts',
         status: status.metrics.lockedUsers > 0 ? ('warn' as const) : ('pass' as const),
-        detail: `${status.metrics.lockedUsers} currently locked account(s).`,
+        detail: `${status.metrics.lockedUsers} currently locked account(s); max failures ${policy.maxFailedLogins} / ${policy.lockoutMinutes}m.`,
       },
       {
         id: 'failed-logins',
@@ -234,6 +264,14 @@ export class SecurityService {
             ? ('warn' as const)
             : ('pass' as const),
         detail: `${status.metrics.failedLogins24h} failed attempt(s) in the last 24 hours.`,
+      },
+      {
+        id: 'ip-allowlist',
+        title: 'Login IP allowlist',
+        status: policy.ipAllowlist.length ? ('pass' as const) : ('warn' as const),
+        detail: policy.ipAllowlist.length
+          ? `${policy.ipAllowlist.length} entr${policy.ipAllowlist.length === 1 ? 'y' : 'ies'} configured.`
+          : 'Empty allowlist (all IPs allowed).',
       },
       {
         id: 'rbac',
@@ -251,7 +289,7 @@ export class SecurityService {
         id: 'validation',
         title: 'Input validation',
         status: 'pass' as const,
-        detail: 'Zod request validation is applied on mutating endpoints.',
+        detail: 'Zod request validation is applied on mutating and filtered query endpoints.',
       },
       {
         id: 'audit',
@@ -270,18 +308,19 @@ export class SecurityService {
     return { checks, summary, defaults: DEFAULT_SECURITY_POLICY };
   }
 
-  async listLoginAttempts(actor: AuthActor, params: Record<string, unknown>) {
+  async listLoginAttempts(actor: AuthActor, params: ListLoginAttemptsQueryInput) {
     const companyId = await this.requireCompanyId(actor.id);
-    const { page, pageSize } = parsePagination(params);
-    const email = typeof params.email === 'string' ? params.email.trim() : undefined;
-    const success =
-      params.success === 'true' ? true : params.success === 'false' ? false : undefined;
+    const { page, pageSize } = parsePagination({
+      page: params.page,
+      pageSize: params.pageSize,
+    });
+    const email = params.email?.trim() || undefined;
 
     const [rows, total] = await this.repo.listLoginAttempts(companyId, {
       page,
       pageSize,
-      email: email || undefined,
-      success,
+      email,
+      success: params.success,
     });
 
     return {

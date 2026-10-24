@@ -3,6 +3,8 @@ import { successResponse } from '../../../interfaces/api-response.js';
 import { SettingsService } from '../services/settings.service.js';
 import type {
   CreateUserInput,
+  ListAuditLogsQueryInput,
+  ListUsersQueryInput,
   UpdateCompanyInput,
   UpdateEmailSettingsInput,
   UpdateIntegrationsInput,
@@ -19,6 +21,7 @@ export class SettingsController {
     return {
       id: req.user!.id,
       permissions: req.user!.permissions,
+      roles: req.user!.roles,
     };
   }
 
@@ -92,7 +95,7 @@ export class SettingsController {
   listUsers = async (req: Request, res: Response): Promise<void> => {
     const data = await this.service.listUsers(
       this.actor(req),
-      req.query as Record<string, unknown>,
+      req.query as unknown as ListUsersQueryInput,
     );
     res.json(successResponse(data, 'Users'));
   };
@@ -148,7 +151,7 @@ export class SettingsController {
   listAuditLogs = async (req: Request, res: Response): Promise<void> => {
     const data = await this.service.listAuditLogs(
       this.actor(req),
-      req.query as Record<string, unknown>,
+      req.query as unknown as ListAuditLogsQueryInput,
     );
     res.json(successResponse(data, 'Audit logs'));
   };

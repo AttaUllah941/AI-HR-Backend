@@ -15,7 +15,7 @@ export class PayrollController {
   constructor(private readonly service = new PayrollService()) {}
 
   private actor(req: Request) {
-    return { id: req.user!.id, permissions: req.user!.permissions };
+    return { id: req.user!.id, permissions: req.user!.permissions, roles: req.user!.roles };
   }
 
   summary = async (req: Request, res: Response): Promise<void> => {

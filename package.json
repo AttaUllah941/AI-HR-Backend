@@ -4,8 +4,8 @@
   "description": "Zenith Enterprise AI HR Management Platform API",
   "main": "index.js",
   "scripts": {
-    "test": "node --import tsx --test src/**/*.test.ts",
-    "test:watch": "node --import tsx --test --watch src/**/*.test.ts",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "test:watch": "node --import tsx --test --watch \"src/**/*.test.ts\"",
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
@@ -31,6 +31,7 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
     "helmet": "^8.3.0",

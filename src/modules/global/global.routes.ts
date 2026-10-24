@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { asyncHandler } from '../../middleware/async-handler.js';
 import { authMiddleware } from '../../middleware/auth.middleware.js';
-import { validateBody } from '../../middleware/validate.middleware.js';
+import { validateBody, validateQuery } from '../../middleware/validate.middleware.js';
 import { GlobalController } from './controllers/global.controller.js';
 import {
   createBookmarkSchema,
+  globalSearchSchema,
   updateBookmarkSchema,
 } from './validators/global.validators.js';
 
@@ -14,7 +15,11 @@ export const globalRouter = Router();
 
 globalRouter.use(authMiddleware);
 
-globalRouter.get('/search', asyncHandler(controller.search));
+globalRouter.get(
+  '/search',
+  validateQuery(globalSearchSchema),
+  asyncHandler(controller.search),
+);
 globalRouter.get('/shortcuts', asyncHandler(controller.shortcuts));
 
 globalRouter.get('/recent-searches', asyncHandler(controller.listRecent));

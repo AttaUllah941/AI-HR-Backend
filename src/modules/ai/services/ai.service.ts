@@ -1,8 +1,15 @@
 import type { AiFeature, Prisma } from '@prisma/client';
 import { env } from '../../../config/env.js';
+import { logger } from '../../../config/logger.js';
 import { ForbiddenError, NotFoundError, ValidationError } from '../../../utils/app-error.js';
 import { createAiProvider } from '../providers/create-ai-provider.js';
 import type { AiChatMessage, AiProvider } from '../providers/ai-provider.js';
+import {
+  redactPiiText,
+  scrubPii,
+  UNTRUSTED_DATA_INSTRUCTION,
+  wrapUntrusted,
+} from './ai-sanitize.js';
 import { AiRepository } from '../repositories/ai.repository.js';
 import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import type {
@@ -19,11 +26,18 @@ type AuthActor = { id: string; permissions: string[] };
 /** Safe JSON parse — returns parsed object or `{ text: content }`. */
 export function safeParseJson(content: string): Prisma.InputJsonValue {
   const trimmed = content.trim();
-  try {
-    return JSON.parse(trimmed) as Prisma.InputJsonValue;
-  } catch {
-    return { text: content };
+  const candidates = [trimmed];
+  // Models frequently wrap JSON in ```json ... ``` fences.
+  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(trimmed);
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate) as Prisma.InputJsonValue;
+    } catch {
+      // try the next candidate
+    }
   }
+  return { text: content };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -38,9 +52,17 @@ function extractScore(output: Prisma.InputJsonValue): number | null {
   if (!obj) return null;
   const score = obj.score;
   if (typeof score === 'number' && Number.isFinite(score)) {
-    return Math.min(100, Math.max(0, score));
+    return Math.min(100, Math.max(0, Math.round(score)));
   }
   return null;
+}
+
+/** Ensures the stored screening output carries the same clamped integer score as the candidate record. */
+function normalizeScreeningOutput(output: Prisma.InputJsonValue): Prisma.InputJsonValue {
+  const obj = asRecord(output);
+  const score = extractScore(output);
+  if (!obj || score === null) return output;
+  return { ...obj, score } as Prisma.InputJsonValue;
 }
 
 function extractScreeningNotes(output: Prisma.InputJsonValue): string | null {
@@ -60,9 +82,6 @@ const AI_FEATURES = [
   'RECOMMENDATIONS',
 ] as const;
 
-/** Generations safe for view-only roles (no screening/appraisal/policy drafts). */
-const PUBLIC_FEATURES: AiFeature[] = ['INSIGHTS', 'RECOMMENDATIONS'];
-
 export class AiService {
   constructor(
     private readonly repo = new AiRepository(),
@@ -77,9 +96,12 @@ export class AiService {
     return user.companyId;
   }
 
-  /** HR/ops roles with create can see all company AI artifacts; view-only is scoped. */
+  /**
+   * Full company-wide visibility of AI artifacts is reserved for the highest ai permission
+   * (ai:delete, the admin tier of view/create/delete). ai:create alone only grants use of the tools.
+   */
   private canManageAi(actor: AuthActor): boolean {
-    return actor.permissions.includes('ai:create') || actor.permissions.includes('ai:delete');
+    return actor.permissions.includes('ai:delete');
   }
 
   private generationScope(actor: AuthActor): {
@@ -89,7 +111,32 @@ export class AiService {
     if (this.canManageAi(actor)) {
       return {};
     }
-    return { featureIn: PUBLIC_FEATURES };
+    return { userId: actor.id };
+  }
+
+  /** Performance data is company-wide only for the same tier the performance module uses. */
+  private hasCompanyWidePerformance(actor: AuthActor): boolean {
+    return (
+      actor.permissions.includes('performance:approve') ||
+      actor.permissions.includes('performance:delete')
+    );
+  }
+
+  private async companyName(companyId: string): Promise<string> {
+    const company = await this.repo.findCompanyName(companyId);
+    return company?.name ?? 'the company';
+  }
+
+  /** Best-effort usage logging: a logging failure must never mask the real outcome. */
+  private async logUsageSafely(data: Parameters<AiRepository['createUsageLog']>[0]): Promise<void> {
+    try {
+      await this.repo.createUsageLog(data);
+    } catch (logError) {
+      logger.warn('Failed to write AI usage log', {
+        feature: data.feature,
+        error: logError instanceof Error ? logError.message : String(logError),
+      });
+    }
   }
 
   /**
@@ -107,7 +154,7 @@ export class AiService {
     try {
       const result = await this.provider.complete({ messages });
       const latencyMs = Date.now() - started;
-      await this.repo.createUsageLog({
+      await this.logUsageSafely({
         companyId,
         userId,
         feature,
@@ -123,7 +170,7 @@ export class AiService {
     } catch (error) {
       const latencyMs = Date.now() - started;
       const message = error instanceof Error ? error.message : 'AI request failed';
-      await this.repo.createUsageLog({
+      await this.logUsageSafely({
         companyId,
         userId,
         feature,
@@ -220,11 +267,12 @@ export class AiService {
 
     const history = await this.repo.listMessages(conversationId);
     const userContent = input.message.trim();
+    const orgName = await this.companyName(companyId);
     const messages: AiChatMessage[] = [
       {
         role: 'system',
         content:
-          'You are Nova, the Zenith HR assistant. Help with leave, attendance, payroll, recruitment, and performance. Be concise and actionable. Do not invent confidential employee data.',
+          `You are Nova, the HR assistant for ${orgName}. Help with leave, attendance, payroll, recruitment, and performance. Be concise and actionable. Do not invent confidential employee data. Personal contact details are redacted before reaching you; never ask users to share them.`,
       },
       ...history.map((m) => ({
         role: (m.role === 'USER'
@@ -232,9 +280,9 @@ export class AiService {
           : m.role === 'ASSISTANT'
             ? 'assistant'
             : 'system') as AiChatMessage['role'],
-        content: m.content,
+        content: redactPiiText(m.content),
       })),
-      { role: 'user', content: userContent },
+      { role: 'user', content: redactPiiText(userContent) },
     ];
 
     const result = await this.completeLogged(
@@ -313,9 +361,11 @@ export class AiService {
       'Return ONLY valid JSON with keys: score (0-100 number), recommendation (string), strengths (string[]), gaps (string[]), summary (string).',
       'Be fair and evidence-based. Do not invent credentials not present in the candidate profile.',
       'When resume file text is unavailable, score from profile fields and clearly note limited evidence.',
+      'score must be an integer between 0 and 100.',
+      UNTRUSTED_DATA_INSTRUCTION,
     ].join(' ');
 
-    const userPayload = {
+    const userPayload = scrubPii({
       candidate: {
         ...candidate,
         resumeTextAvailable: false,
@@ -324,7 +374,7 @@ export class AiService {
       },
       jobOpening: job,
       notes: input.notes ?? null,
-    };
+    });
 
     const result = await this.completeLogged(
       companyId,
@@ -332,12 +382,12 @@ export class AiService {
       'RESUME_SCREENING',
       [
         { role: 'system', content: system },
-        { role: 'user', content: JSON.stringify(userPayload) },
+        { role: 'user', content: wrapUntrusted(JSON.stringify(userPayload)) },
       ],
       { candidateId: candidate.id, jobOpeningId: job?.id ?? null },
     );
 
-    const output = safeParseJson(result.content);
+    const output = normalizeScreeningOutput(safeParseJson(result.content));
     const score = extractScore(output);
     const notes = extractScreeningNotes(output);
 
@@ -390,6 +440,17 @@ export class AiService {
     const employee = await this.repo.findEmployee(companyId, input.employeeId);
     if (!employee) throw new NotFoundError('Employee not found');
 
+    if (!this.hasCompanyWidePerformance(actor)) {
+      const self = await this.repo.findEmployeeByUserId(companyId, actor.id);
+      const allowed =
+        self !== null &&
+        (self.id === employee.id ||
+          (await this.repo.isDirectReport(companyId, self.id, employee.id)));
+      if (!allowed) {
+        throw new ForbiddenError('You can only generate appraisals for yourself or your direct reports');
+      }
+    }
+
     let review: Awaited<ReturnType<AiRepository['findPerformanceReview']>> = null;
     if (input.reviewId) {
       review = await this.repo.findPerformanceReview(companyId, input.reviewId);
@@ -408,15 +469,16 @@ export class AiService {
       'You are an HR performance specialist writing an appraisal draft.',
       'Return ONLY valid JSON with keys: overallRating (number 1-5), narrative (string), strengths (string[]), developmentAreas (string[]), recommendedGoals (string[]).',
       'Base the draft on the provided goals, KPIs, and review data. Do not invent private facts.',
+      UNTRUSTED_DATA_INSTRUCTION,
     ].join(' ');
 
-    const userPayload = {
+    const userPayload = scrubPii({
       employee,
       periodLabel: input.periodLabel ?? null,
       goals,
       kpis,
       review,
-    };
+    });
 
     const result = await this.completeLogged(
       companyId,
@@ -424,7 +486,7 @@ export class AiService {
       'APPRAISAL',
       [
         { role: 'system', content: system },
-        { role: 'user', content: JSON.stringify(userPayload) },
+        { role: 'user', content: wrapUntrusted(JSON.stringify(userPayload)) },
       ],
       { employeeId: employee.id, reviewId: review?.id ?? null },
     );
@@ -452,9 +514,10 @@ export class AiService {
     const companyId = await this.requireCompanyId(actor.id);
 
     const system = [
-      'You are an HR policy writer for Zenith Enterprises.',
+      `You are an HR policy writer for ${await this.companyName(companyId)}.`,
       'Write a clear markdown policy document with Purpose, Scope, Policy statements, Compliance, and Review sections.',
       'Tone must match the requested tone. Do not include legal disclaimers as if they were attorney advice.',
+      UNTRUSTED_DATA_INSTRUCTION,
     ].join(' ');
 
     const userPayload = {
@@ -477,7 +540,7 @@ export class AiService {
             `Audience: ${userPayload.audience}`,
             `Tone: ${userPayload.tone}`,
             userPayload.additionalContext
-              ? `Additional context: ${userPayload.additionalContext}`
+              ? `Additional context: ${wrapUntrusted(redactPiiText(userPayload.additionalContext))}`
               : '',
           ]
             .filter(Boolean)
@@ -650,15 +713,13 @@ export class AiService {
     }
 
     const scope = this.generationScope(actor);
-    if (feature && scope.featureIn && !scope.featureIn.includes(feature)) {
-      throw new ForbiddenError('You do not have access to this AI feature history');
-    }
 
     const [items, total] = await this.repo.listGenerations(companyId, {
       page,
       pageSize,
       feature,
       featureIn: feature ? undefined : scope.featureIn,
+      userId: scope.userId,
     });
     return { items, pagination: paginationMeta(page, pageSize, total) };
   }
@@ -668,6 +729,7 @@ export class AiService {
     const scope = this.generationScope(actor);
     const generation = await this.repo.findGeneration(companyId, id, {
       featureIn: scope.featureIn,
+      userId: scope.userId,
     });
     if (!generation) throw new NotFoundError('Generation not found');
     return generation;

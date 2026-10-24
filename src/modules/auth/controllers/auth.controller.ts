@@ -6,6 +6,7 @@ import type {
   LoginInput,
   MfaDisableInput,
   MfaEnableInput,
+  MfaSetupInput,
   MfaVerifyInput,
   RefreshInput,
   RegisterInput,
@@ -41,7 +42,7 @@ export class AuthController {
   logout = async (req: Request, res: Response): Promise<void> => {
     const refreshToken =
       typeof req.body?.refreshToken === 'string' ? req.body.refreshToken : undefined;
-    const data = await this.service.logout(req.user!.id, refreshToken);
+    const data = await this.service.logout(req.user!.id, refreshToken, req.user!.sessionId);
     res.json(successResponse(data, 'Logged out'));
   };
 
@@ -71,7 +72,7 @@ export class AuthController {
   };
 
   setupMfa = async (req: Request, res: Response): Promise<void> => {
-    const data = await this.service.setupMfa(req.user!.id);
+    const data = await this.service.setupMfa(req.user!.id, req.body as MfaSetupInput);
     res.json(successResponse(data, 'MFA setup started'));
   };
 

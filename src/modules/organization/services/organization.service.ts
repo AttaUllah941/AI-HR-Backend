@@ -119,11 +119,8 @@ export class OrganizationService {
     if (!existing) {
       throw new NotFoundError('Branch not found');
     }
-    if (input.isHeadOffice) {
-      await this.repo.clearOtherHeadOffices(companyId, id);
-    }
     try {
-      const branch = await this.repo.updateBranch(id, input);
+      const branch = await this.repo.updateBranch(companyId, id, input);
       await this.repo.createAuditLog({
         actorId: actor.id,
         action: 'organization.branch.update',
@@ -142,10 +139,18 @@ export class OrganizationService {
     if (!existing) {
       throw new NotFoundError('Branch not found');
     }
-    const departmentCount = await this.repo.countDepartmentsForBranch(companyId, id);
+    const [departmentCount, employeeCount] = await Promise.all([
+      this.repo.countDepartmentsForBranch(companyId, id),
+      this.repo.countEmployeesFor(companyId, 'branchId', id),
+    ]);
     if (departmentCount > 0) {
-      throw new ValidationError(
+      throw new ConflictError(
         'Cannot delete a branch that still has departments. Reassign or remove them first.',
+      );
+    }
+    if (employeeCount > 0) {
+      throw new ConflictError(
+        'Cannot delete a branch that still has employees. Reassign them first.',
       );
     }
     await this.repo.softDeleteBranch(id);
@@ -220,18 +225,24 @@ export class OrganizationService {
     if (!existing) {
       throw new NotFoundError('Department not found');
     }
-    const [childCount, teamCount] = await Promise.all([
+    const [childCount, teamCount, employeeCount] = await Promise.all([
       this.repo.countChildDepartments(companyId, id),
       this.repo.countTeamsForDepartment(companyId, id),
+      this.repo.countEmployeesFor(companyId, 'departmentId', id),
     ]);
     if (childCount > 0) {
-      throw new ValidationError(
+      throw new ConflictError(
         'Cannot delete a department that has child departments. Remove or reassign them first.',
       );
     }
     if (teamCount > 0) {
-      throw new ValidationError(
+      throw new ConflictError(
         'Cannot delete a department that still has teams. Remove or reassign them first.',
+      );
+    }
+    if (employeeCount > 0) {
+      throw new ConflictError(
+        'Cannot delete a department that still has employees. Reassign them first.',
       );
     }
     await this.repo.softDeleteDepartment(id);
@@ -302,6 +313,10 @@ export class OrganizationService {
     if (!existing) {
       throw new NotFoundError('Team not found');
     }
+    const teamEmployees = await this.repo.countEmployeesFor(companyId, 'teamId', id);
+    if (teamEmployees > 0) {
+      throw new ConflictError('Cannot delete a team that still has employees. Reassign them first.');
+    }
     await this.repo.softDeleteTeam(id);
     await this.repo.createAuditLog({
       actorId: actor.id,
@@ -360,6 +375,12 @@ export class OrganizationService {
     if (!existing) {
       throw new NotFoundError('Designation not found');
     }
+    const designationEmployees = await this.repo.countEmployeesFor(companyId, 'designationId', id);
+    if (designationEmployees > 0) {
+      throw new ConflictError(
+        'Cannot delete a designation that is still assigned to employees. Reassign them first.',
+      );
+    }
     await this.repo.softDeleteDesignation(id);
     await this.repo.createAuditLog({
       actorId: actor.id,
@@ -375,11 +396,14 @@ export class OrganizationService {
     departmentId: string,
     parentId: string,
   ) {
+    const visited = new Set<string>();
     let current: string | null = parentId;
     while (current) {
       if (current === departmentId) {
         throw new ValidationError('Department hierarchy cannot contain a circular reference');
       }
+      if (visited.has(current)) return;
+      visited.add(current);
       const row = await this.repo.getDepartmentParentId(companyId, current);
       current = row?.parentId ?? null;
     }

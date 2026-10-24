@@ -127,7 +127,20 @@ export class SettingsRepository {
   findRolesByCodes(codes: string[]) {
     return prisma.role.findMany({
       where: { code: { in: codes } },
-      select: { id: true, code: true, name: true },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        rolePermissions: { select: { permission: { select: { code: true } } } },
+      },
+    });
+  }
+
+  /** Revokes every active session of a user (used on suspension, deletion and role changes). */
+  revokeUserSessions(userId: string) {
+    return prisma.session.updateMany({
+      where: { userId, status: 'ACTIVE' },
+      data: { status: 'REVOKED', revokedAt: new Date() },
     });
   }
 
@@ -227,6 +240,33 @@ export class SettingsRepository {
         status: 'DELETED',
         deletedAt: new Date(),
       },
+    });
+  }
+
+  /**
+   * Removes a user that was just created and never used, freeing the unique email for a retry.
+   * Falls back to a soft delete (with a tombstoned email) if related rows block the hard delete.
+   */
+  async discardNewUser(userId: string, email: string) {
+    try {
+      await prisma.user.delete({ where: { id: userId } });
+    } catch {
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          status: 'DELETED',
+          deletedAt: new Date(),
+          email: `deleted+${userId}+${email}`,
+        },
+      });
+    }
+  }
+
+  getSecurityPolicy(companyId: string) {
+    return prisma.companySecurityPolicy.upsert({
+      where: { companyId },
+      create: { companyId },
+      update: {},
     });
   }
 
