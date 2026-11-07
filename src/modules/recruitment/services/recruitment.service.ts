@@ -721,14 +721,18 @@ export class RecruitmentService {
     if (existing.status !== 'DRAFT') {
       throw new ValidationError('Only draft offers can be sent');
     }
-    const offer = await this.repo.sendOffer(id);
+    // Atomic claim: of two concurrent sends only one flips DRAFT -> SENT.
+    const claimed = await this.repo.claimOfferSend(id, companyId);
+    if (claimed === 0) {
+      throw new ConflictError('Offer was already sent or changed; reload and try again');
+    }
     await this.repo.createAuditLog({
       actorId: actor.id,
       action: 'recruitment.offer.send',
       entityType: 'JobOffer',
       entityId: id,
     });
-    return offer;
+    return this.repo.findOfferById(id);
   }
 
   async respondOffer(actor: AuthActor, id: string, input: RespondOfferInput) {
@@ -743,18 +747,23 @@ export class RecruitmentService {
     }
 
     const status = input.accept ? 'ACCEPTED' : 'DECLINED';
-    const offer = await this.repo.respondOffer(id, status, input.notes);
-
-    if (input.accept) {
-      await this.repo.updateApplicationStatus(existing.applicationId, 'HIRED');
-    }
-
-    await this.repo.createAuditLog({
-      actorId: actor.id,
-      action: 'recruitment.offer.respond',
-      entityType: 'JobOffer',
-      entityId: id,
-      metadata: { status },
+    // Offer status, application status and audit row change together or not at all.
+    const offer = await this.repo.runTransaction(async (tx) => {
+      const updated = await this.repo.respondOffer(id, status, input.notes, tx);
+      if (input.accept) {
+        await this.repo.updateApplicationStatus(existing.applicationId, 'HIRED', undefined, tx);
+      }
+      await this.repo.createAuditLog(
+        {
+          actorId: actor.id,
+          action: 'recruitment.offer.respond',
+          entityType: 'JobOffer',
+          entityId: id,
+          metadata: { status },
+        },
+        tx,
+      );
+      return updated;
     });
     return offer;
   }

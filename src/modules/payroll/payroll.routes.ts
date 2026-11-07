@@ -13,6 +13,7 @@ import {
   updateSalaryStructureSchema,
   updateTaxSettingSchema,
 } from './validators/payroll.validators.js';
+import { idempotent } from '../../middleware/idempotency.middleware.js';
 
 const controller = new PayrollController();
 
@@ -91,6 +92,7 @@ payrollRouter.get('/runs', requirePermissions('payroll:view'), asyncHandler(cont
 payrollRouter.post(
   '/runs',
   requirePermissions('payroll:create'),
+  idempotent('payroll.run.create'),
   validateBody(createPayrollRunSchema),
   asyncHandler(controller.createRun),
 );

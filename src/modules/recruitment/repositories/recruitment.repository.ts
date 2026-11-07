@@ -628,16 +628,26 @@ export class RecruitmentRepository {
     });
   }
 
-  sendOffer(id: string) {
-    return prisma.jobOffer.update({
-      where: { id },
+  /** Atomically DRAFT -> SENT. Returns 0 if another request already sent it (or it changed state). */
+  async claimOfferSend(id: string, companyId: string, db: DbClient = prisma): Promise<number> {
+    const result = await db.jobOffer.updateMany({
+      where: { id, companyId, status: 'DRAFT' },
       data: { status: 'SENT', sentAt: new Date() },
-      include: offerInclude,
     });
+    return result.count;
   }
 
-  respondOffer(id: string, status: 'ACCEPTED' | 'DECLINED', notes?: string | null) {
-    return prisma.jobOffer.update({
+  findOfferById(id: string, db: DbClient = prisma) {
+    return db.jobOffer.findUnique({ where: { id }, include: offerInclude });
+  }
+
+  respondOffer(
+    id: string,
+    status: 'ACCEPTED' | 'DECLINED',
+    notes?: string | null,
+    db: DbClient = prisma,
+  ) {
+    return db.jobOffer.update({
       where: { id },
       data: {
         status,
@@ -695,14 +705,17 @@ export class RecruitmentRepository {
     });
   }
 
-  createAuditLog(input: {
-    actorId: string;
-    action: string;
-    entityType: string;
-    entityId: string;
-    metadata?: Prisma.InputJsonValue;
-  }) {
-    return prisma.auditLog.create({
+  createAuditLog(
+    input: {
+      actorId: string;
+      action: string;
+      entityType: string;
+      entityId: string;
+      metadata?: Prisma.InputJsonValue;
+    },
+    db: DbClient = prisma,
+  ) {
+    return db.auditLog.create({
       data: {
         actorId: input.actorId,
         action: input.action,

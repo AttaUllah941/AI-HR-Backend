@@ -1909,3 +1909,21 @@ model LoginAttempt {
   @@index([userId, createdAt])
   @@map("login_attempts")
 }
+
+/// Stored responses for requests sent with an Idempotency-Key header (see src/middleware/idempotency.middleware.ts).
+model IdempotencyKey {
+  id             String   @id @default(cuid())
+  userId         String
+  scope          String
+  key            String
+  requestHash    String
+  status         String   @default("IN_PROGRESS")
+  responseStatus Int?
+  responseBody   Json?
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  @@unique([userId, scope, key])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}
