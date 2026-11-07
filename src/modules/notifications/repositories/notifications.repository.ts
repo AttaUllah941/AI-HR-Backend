@@ -6,6 +6,12 @@ import type {
   PushPlatform,
 } from '@prisma/client';
 import { prisma } from '../../../config/database.js';
+import { decodeCursor, keysetOrderBy, keysetWhere, type KeysetField } from '../../../utils/cursor.js';
+
+export const NOTIFICATION_KEYSET: KeysetField[] = [
+  { key: 'createdAt', dir: 'desc', isDate: true },
+  { key: 'id', dir: 'desc' },
+];
 
 const notDeleted = { deletedAt: null };
 
@@ -35,8 +41,8 @@ export class NotificationsRepository {
 
   // —— Notifications ——
 
-  listForUser(companyId: string, userId: string, query: ListQuery) {
-    const where: Prisma.NotificationWhereInput = {
+  private listWhere(companyId: string, userId: string, query: ListQuery): Prisma.NotificationWhereInput {
+    return {
       companyId,
       userId,
       ...notDeleted,
@@ -50,10 +56,14 @@ export class NotificationsRepository {
           : {}),
       ...(query.unreadOnly ? { readAt: null } : {}),
     };
+  }
+
+  listForUser(companyId: string, userId: string, query: ListQuery) {
+    const where = this.listWhere(companyId, userId, query);
     return Promise.all([
       prisma.notification.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: (query.page - 1) * query.pageSize,
         take: query.pageSize,
         include: {
@@ -62,6 +72,27 @@ export class NotificationsRepository {
       }),
       prisma.notification.count({ where }),
     ]);
+  }
+
+  /** Keyset page (no COUNT): pageSize + 1 rows after the cursor, newest first. */
+  listForUserCursor(
+    companyId: string,
+    userId: string,
+    query: Omit<ListQuery, 'page'> & { cursor?: string },
+  ) {
+    const base = this.listWhere(companyId, userId, { ...query, page: 1 });
+    const after = decodeCursor(query.cursor, NOTIFICATION_KEYSET);
+    const where: Prisma.NotificationWhereInput = after
+      ? { AND: [base, keysetWhere(NOTIFICATION_KEYSET, after) as Prisma.NotificationWhereInput] }
+      : base;
+    return prisma.notification.findMany({
+      where,
+      orderBy: keysetOrderBy(NOTIFICATION_KEYSET) as Prisma.NotificationOrderByWithRelationInput[],
+      take: query.pageSize + 1,
+      include: {
+        template: { select: { id: true, code: true, name: true } },
+      },
+    });
   }
 
   findForUser(companyId: string, userId: string, id: string) {

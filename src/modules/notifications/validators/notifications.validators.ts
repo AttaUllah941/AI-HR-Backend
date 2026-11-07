@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cursorQuery, pageQuery, pageSizeQuery } from '../../../validators/pagination.validators.js';
 
 export const notificationCategorySchema = z.enum([
   'SYSTEM',
@@ -80,15 +81,13 @@ export const feedQuerySchema = z.object({
 });
 
 export const listNotificationsQuerySchema = z.object({
+  cursor: cursorQuery,
   category: optionalEnum(notificationCategorySchema),
   channel: optionalEnum(notificationChannelSchema),
   status: optionalEnum(notificationStatusSchema),
   unreadOnly: optionalBool,
-  page: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).optional()),
-  pageSize: z.preprocess(
-    emptyToUndefined,
-    z.coerce.number().int().min(1).max(100).optional(),
-  ),
+  page: pageQuery,
+  pageSize: pageSizeQuery,
 });
 
 export type SendNotificationInput = z.infer<typeof sendNotificationSchema>;

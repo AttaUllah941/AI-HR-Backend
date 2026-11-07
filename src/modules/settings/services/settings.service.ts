@@ -12,7 +12,8 @@ import { emailService } from '../../../services/email/email.service.js';
 import { AppError } from '../../../utils/app-error.js';
 import { hashPassword } from '../../../utils/password.js';
 import { validatePasswordAgainstPolicy } from '../../../utils/security.js';
-import { SettingsRepository } from '../repositories/settings.repository.js';
+import { AUDIT_KEYSET, SettingsRepository } from '../repositories/settings.repository.js';
+import { cursorPage, wantsCursor } from '../../../utils/cursor.js';
 import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import type {
   CreateUserInput,
@@ -646,16 +647,23 @@ export class SettingsService {
       page: params.page,
       pageSize: params.pageSize,
     });
-
-    const [rows, total] = await this.repo.listAuditLogs(companyId, {
-      page,
-      pageSize,
+    const filters = {
       search: params.search?.trim() || undefined,
       entityType: params.entityType?.trim() || undefined,
       actorId: params.actorId || undefined,
-    });
+    };
 
-    const items = rows.map((row) => ({
+    const toItem = (row: {
+      id: string;
+      action: string;
+      entityType: string | null;
+      entityId: string | null;
+      metadata: unknown;
+      ipAddress: string | null;
+      userAgent: string | null;
+      createdAt: Date;
+      actor: { id: string; email: string; firstName: string; lastName: string } | null;
+    }) => ({
       id: row.id,
       action: row.action,
       entityType: row.entityType,
@@ -672,10 +680,21 @@ export class SettingsService {
             lastName: row.actor.lastName,
           }
         : null,
-    }));
+    });
 
+    // Opt-in cursor mode (?cursor=): no COUNT query, stable under concurrent inserts.
+    if (wantsCursor(params)) {
+      const rows = await this.repo.listAuditLogsCursor(companyId, {
+        cursor: params.cursor,
+        pageSize,
+        ...filters,
+      });
+      return cursorPage(rows.map(toItem), pageSize, AUDIT_KEYSET);
+    }
+
+    const [rows, total] = await this.repo.listAuditLogs(companyId, { page, pageSize, ...filters });
     return {
-      items,
+      items: rows.map(toItem),
       pagination: paginationMeta(page, pageSize, total),
     };
   }

@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { validateQuery } from '../middleware/validate.middleware.js';
+import { paginationQuerySchema } from '../validators/pagination.validators.js';
 import { aiRouter } from '../modules/ai/ai.routes.js';
 import { attendanceRouter } from '../modules/attendance/attendance.routes.js';
 import { authRouter } from '../modules/auth/auth.routes.js';
@@ -19,6 +21,9 @@ import { globalRouter } from '../modules/global/global.routes.js';
 import { securityRouter } from '../modules/security/security.routes.js';
 
 export const apiRouter = Router();
+
+// One shared rule for every list endpoint: page >= 1 and pageSize <= 100 (other params pass through).
+apiRouter.use(validateQuery(paginationQuerySchema.loose()));
 
 apiRouter.use('/health', healthRouter);
 apiRouter.use('/auth', authRouter);

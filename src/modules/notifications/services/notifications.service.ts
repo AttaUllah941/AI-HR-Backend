@@ -2,7 +2,7 @@ import type { NotificationCategory } from '@prisma/client';
 import { emailService } from '../../../services/email/email.service.js';
 import { pushProvider } from '../../../services/push/push-provider.js';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../../utils/app-error.js';
-import { NotificationsRepository } from '../repositories/notifications.repository.js';
+import { NOTIFICATION_KEYSET, NotificationsRepository } from '../repositories/notifications.repository.js';
 import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import type {
   CreateTemplateInput,
@@ -12,6 +12,7 @@ import type {
   UpdateTemplateInput,
   UpsertPreferencesInput,
 } from '../validators/notifications.validators.js';
+import { cursorPage, wantsCursor } from '../../../utils/cursor.js';
 
 type AuthActor = { id: string; permissions: string[] };
 
@@ -106,14 +107,28 @@ export class NotificationsService {
       pageSize: params.pageSize,
     });
 
-    const [items, total] = await this.repo.listForUser(user.companyId, actor.id, {
-      page,
-      pageSize,
+    const filters = {
       category: params.category,
       // The inbox only ever lists in-app rows unless a channel is requested explicitly.
       channel: params.channel ?? 'IN_APP',
       status: params.status,
       unreadOnly: params.unreadOnly === true,
+    };
+
+    // Opt-in cursor mode (?cursor=): no COUNT query, stable while new notifications arrive.
+    if (wantsCursor(params)) {
+      const rows = await this.repo.listForUserCursor(user.companyId, actor.id, {
+        cursor: params.cursor,
+        pageSize,
+        ...filters,
+      });
+      return cursorPage(rows, pageSize, NOTIFICATION_KEYSET);
+    }
+
+    const [items, total] = await this.repo.listForUser(user.companyId, actor.id, {
+      page,
+      pageSize,
+      ...filters,
     });
     return { items, pagination: paginationMeta(page, pageSize, total) };
   }

@@ -9,6 +9,7 @@ import {
 import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import {
   AttendanceRepository,
+  attendanceKeyset,
   type AttendanceListQuery,
 } from '../repositories/attendance.repository.js';
 import type {
@@ -22,6 +23,7 @@ import type {
   UpdateHolidayInput,
   UpdateShiftInput,
 } from '../validators/attendance.validators.js';
+import { cursorPage, wantsCursor } from '../../../utils/cursor.js';
 
 type AuthActor = { id: string; permissions: string[] };
 
@@ -292,6 +294,14 @@ export class AttendanceService {
     const query = this.parseListQuery(params);
     const scopeEmployeeId = await this.readScopeEmployeeId(companyId, actor);
     if (scopeEmployeeId) query.employeeId = scopeEmployeeId;
+    // Opt-in cursor mode (?cursor=): no COUNT query, stable while records are being added.
+    if (wantsCursor(params)) {
+      const rows = await this.repo.listAttendanceCursor(companyId, {
+        ...query,
+        cursor: params.cursor,
+      });
+      return cursorPage(rows, query.pageSize, attendanceKeyset(query.sortDir));
+    }
     const [items, total] = await this.repo.listAttendance(companyId, query);
     return {
       items,

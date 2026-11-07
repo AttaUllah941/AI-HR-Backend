@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cursorQuery, pageQuery, pageSizeQuery } from '../../../validators/pagination.validators.js';
 
 const emptyToUndefined = (value: unknown) =>
   value === '' || value === null || value === undefined ? undefined : value;
@@ -111,22 +112,17 @@ export const listUsersQuerySchema = z.object({
     emptyToUndefined,
     z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED']).optional(),
   ),
-  page: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).optional()),
-  pageSize: z.preprocess(
-    emptyToUndefined,
-    z.coerce.number().int().min(1).max(100).optional(),
-  ),
+  page: pageQuery,
+  pageSize: pageSizeQuery,
 });
 
 export const listAuditLogsQuerySchema = z.object({
+  cursor: cursorQuery,
   search: z.preprocess(emptyToUndefined, z.string().max(200).optional()),
   entityType: z.preprocess(emptyToUndefined, z.string().max(80).optional()),
   actorId: z.preprocess(emptyToUndefined, z.string().cuid().optional()),
-  page: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).optional()),
-  pageSize: z.preprocess(
-    emptyToUndefined,
-    z.coerce.number().int().min(1).max(100).optional(),
-  ),
+  page: pageQuery,
+  pageSize: pageSizeQuery,
 });
 
 export type UpdateCompanyInput = z.infer<typeof updateCompanySchema>;

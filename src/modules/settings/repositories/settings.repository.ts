@@ -1,5 +1,19 @@
 import type { Prisma, UserStatus } from '@prisma/client';
 import { prisma } from '../../../config/database.js';
+import { decodeCursor, keysetOrderBy, keysetWhere, type KeysetField } from '../../../utils/cursor.js';
+
+export const AUDIT_KEYSET: KeysetField[] = [
+  { key: 'createdAt', dir: 'desc', isDate: true },
+  { key: 'id', dir: 'desc' },
+];
+
+const auditActorSelect = {
+  id: true,
+  email: true,
+  firstName: true,
+  lastName: true,
+  companyId: true,
+} as const;
 
 const notDeleted = { deletedAt: null };
 
@@ -339,18 +353,13 @@ export class SettingsRepository {
     });
   }
 
-  listAuditLogs(
+  private auditWhere(
     companyId: string,
-    query: {
-      page: number;
-      pageSize: number;
-      actorId?: string;
-      entityType?: string;
-      search?: string;
-    },
-  ) {
-    const where: Prisma.AuditLogWhereInput = {
-      actor: { companyId },
+    query: { actorId?: string; entityType?: string; search?: string },
+  ): Prisma.AuditLogWhereInput {
+    return {
+      // Indexed (companyId, createdAt); filled by a DB trigger from the actor for every new row.
+      companyId,
       ...(query.actorId ? { actorId: query.actorId } : {}),
       ...(query.entityType ? { entityType: query.entityType } : {}),
       ...(query.search
@@ -363,27 +372,54 @@ export class SettingsRepository {
           }
         : {}),
     };
+  }
 
+  /** Offset page (with total). Unchanged response shape for existing clients. */
+  listAuditLogs(
+    companyId: string,
+    query: {
+      page: number;
+      pageSize: number;
+      actorId?: string;
+      entityType?: string;
+      search?: string;
+    },
+  ) {
+    const where = this.auditWhere(companyId, query);
     return Promise.all([
       prisma.auditLog.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: (query.page - 1) * query.pageSize,
         take: query.pageSize,
-        include: {
-          actor: {
-            select: {
-              id: true,
-              email: true,
-              firstName: true,
-              lastName: true,
-              companyId: true,
-            },
-          },
-        },
+        include: { actor: { select: auditActorSelect } },
       }),
       prisma.auditLog.count({ where }),
     ]);
+  }
+
+  /** Keyset page (no COUNT): fetches pageSize + 1 rows after the cursor. */
+  listAuditLogsCursor(
+    companyId: string,
+    query: {
+      cursor?: string;
+      pageSize: number;
+      actorId?: string;
+      entityType?: string;
+      search?: string;
+    },
+  ) {
+    const base = this.auditWhere(companyId, query);
+    const after = decodeCursor(query.cursor, AUDIT_KEYSET);
+    const where: Prisma.AuditLogWhereInput = after
+      ? { AND: [base, keysetWhere(AUDIT_KEYSET, after) as Prisma.AuditLogWhereInput] }
+      : base;
+    return prisma.auditLog.findMany({
+      where,
+      orderBy: keysetOrderBy(AUDIT_KEYSET) as Prisma.AuditLogOrderByWithRelationInput[],
+      take: query.pageSize + 1,
+      include: { actor: { select: auditActorSelect } },
+    });
   }
 
   createAuditLog(input: {

@@ -9,6 +9,15 @@ import type {
   UpdateHolidayInput,
   UpdateShiftInput,
 } from '../validators/attendance.validators.js';
+import { decodeCursor, keysetOrderBy, keysetWhere, type KeysetField } from '../../../utils/cursor.js';
+
+export function attendanceKeyset(sortDir: 'asc' | 'desc'): KeysetField[] {
+  return [
+    { key: 'date', dir: sortDir, isDate: true },
+    { key: 'createdAt', dir: 'desc', isDate: true },
+    { key: 'id', dir: 'desc' },
+  ];
+}
 
 const notDeleted = { deletedAt: null };
 
@@ -228,8 +237,8 @@ export class AttendanceRepository {
     return prisma.holiday.update({ where: { id }, data: { deletedAt: new Date() } });
   }
 
-  listAttendance(companyId: string, query: AttendanceListQuery) {
-    const where: Prisma.AttendanceRecordWhereInput = {
+  private attendanceWhere(companyId: string, query: AttendanceListQuery): Prisma.AttendanceRecordWhereInput {
+    return {
       companyId,
       ...notDeleted,
       ...(query.status ? { status: query.status } : {}),
@@ -256,19 +265,43 @@ export class AttendanceRepository {
           }
         : {}),
     };
+  }
+
+  listAttendance(companyId: string, query: AttendanceListQuery) {
+    const where = this.attendanceWhere(companyId, query);
 
     const skip = (query.page - 1) * query.pageSize;
     return Promise.all([
       prisma.attendanceRecord.findMany({
         where,
         include: attendanceInclude,
-        orderBy: [{ date: query.sortDir }, { createdAt: 'desc' }],
+        orderBy: [{ date: query.sortDir }, { createdAt: 'desc' }, { id: 'desc' }],
         skip,
         take: query.pageSize,
       }),
       prisma.attendanceRecord.count({ where }),
     ]);
   }
+
+  /** Keyset page (no COUNT) ordered by date (query.sortDir), then newest created, then id. */
+  listAttendanceCursor(
+    companyId: string,
+    query: Omit<AttendanceListQuery, 'page'> & { cursor?: string },
+  ) {
+    const fields = attendanceKeyset(query.sortDir);
+    const base = this.attendanceWhere(companyId, { ...query, page: 1 });
+    const after = decodeCursor(query.cursor, fields);
+    const where: Prisma.AttendanceRecordWhereInput = after
+      ? { AND: [base, keysetWhere(fields, after) as Prisma.AttendanceRecordWhereInput] }
+      : base;
+    return prisma.attendanceRecord.findMany({
+      where,
+      include: attendanceInclude,
+      orderBy: keysetOrderBy(fields) as Prisma.AttendanceRecordOrderByWithRelationInput[],
+      take: query.pageSize + 1,
+    });
+  }
+
 
   findAttendance(companyId: string, id: string) {
     return prisma.attendanceRecord.findFirst({

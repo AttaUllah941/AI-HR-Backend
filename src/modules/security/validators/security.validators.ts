@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { pageQuery, pageSizeQuery } from '../../../validators/pagination.validators.js';
 import { isValidIpOrCidr } from '../../../utils/ip-matcher.js';
 
 const emptyToUndefined = (value: unknown) =>
@@ -22,11 +23,8 @@ const ipOrCidrSchema = z
 export const listLoginAttemptsQuerySchema = z.object({
   email: z.preprocess(emptyToUndefined, z.string().max(255).optional()),
   success: optionalBool,
-  page: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).optional()),
-  pageSize: z.preprocess(
-    emptyToUndefined,
-    z.coerce.number().int().min(1).max(100).optional(),
-  ),
+  page: pageQuery,
+  pageSize: pageSizeQuery,
 });
 
 export const updateSecurityPolicySchema = z

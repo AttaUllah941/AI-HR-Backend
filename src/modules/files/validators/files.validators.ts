@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { pageQuery, pageSizeQuery } from '../../../validators/pagination.validators.js';
 
 export const fileCategories = [
   'GENERAL',
@@ -24,11 +25,8 @@ export const listFilesQuerySchema = z.object({
   category: z.preprocess(emptyToUndefined, z.enum(fileCategories).optional()),
   employeeId: optionalCuid,
   candidateId: optionalCuid,
-  page: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).optional()),
-  pageSize: z.preprocess(
-    emptyToUndefined,
-    z.coerce.number().int().min(1).max(100).optional(),
-  ),
+  page: pageQuery,
+  pageSize: pageSizeQuery,
 });
 
 /** Multipart text fields after multer. */
