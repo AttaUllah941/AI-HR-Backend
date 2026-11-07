@@ -24,7 +24,7 @@ export class DashboardRepository {
   // AuditLog has no companyId column; scope through the actor's company.
   recentAuditLogs(companyId: string, limit: number) {
     return prisma.auditLog.findMany({
-      where: { actor: { companyId } },
+      where: { companyId },
       take: limit,
       orderBy: { createdAt: 'desc' },
       include: {

@@ -244,6 +244,7 @@ model EmailVerificationToken {
 
 model AuditLog {
   id         String   @id @default(cuid())
+  companyId  String?
   actorId    String?
   action     String
   entityType String?
@@ -259,6 +260,7 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([entityId])
   @@index([createdAt])
+  @@index([companyId, createdAt])
   @@map("audit_logs")
 }
 
@@ -494,6 +496,7 @@ model Employee {
   @@index([designationId])
   @@index([managerId])
   @@index([deletedAt])
+  @@index([companyId, joinDate])
   @@map("employees")
 }
 
@@ -1581,6 +1584,7 @@ model AiGeneration {
   @@index([userId])
   @@index([relatedEntityType, relatedEntityId])
   @@index([deletedAt])
+  @@index([companyId, createdAt])
   @@map("ai_generations")
 }
 
@@ -1826,6 +1830,7 @@ model StoredFile {
   @@index([candidateId])
   @@index([uploadedById])
   @@index([deletedAt])
+  @@index([companyId, createdAt])
   @@map("stored_files")
 }
 
