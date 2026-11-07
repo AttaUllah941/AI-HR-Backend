@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import { env, isDevelopment, isProduction } from './config/env.js';
 import { apiRouter } from './routes/index.js';
+import { docsRouter } from './docs/docs.routes.js';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware.js';
 import { requestIdMiddleware } from './middleware/request-id.middleware.js';
 import { httpLogMiddleware } from './middleware/http-logger.middleware.js';
@@ -110,6 +111,11 @@ export function createApp() {
 
   // Prometheus scrape endpoint: 404 unless METRICS_ENABLED; token or private network only.
   app.get('/metrics', defaultMetricsAccess(), metricsHandler);
+
+  // Swagger UI + openapi.json, generated from the routers/validators. Never in production.
+  if (!isProduction) {
+    app.use('/api/docs', docsRouter);
+  }
 
   app.use(env.API_PREFIX, lookupCache, apiRouter);
 

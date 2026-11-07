@@ -4,6 +4,7 @@ import { AuthRepository } from '../modules/auth/repositories/auth.repository.js'
 import { UnauthorizedError } from '../utils/app-error.js';
 import { verifyAccessToken } from '../utils/jwt.js';
 import { asyncHandler } from './async-handler.js';
+import { attachRouteMeta } from '../docs/route-meta.js';
 
 const authRepo = new AuthRepository();
 
@@ -49,9 +50,12 @@ async function hydrateAuthUser(userId: string, sessionId?: string): Promise<Auth
   };
 }
 
-export const authMiddleware = asyncHandler(async (req, res, next) => {
-  await runAuthMiddleware(req, res, next);
-});
+export const authMiddleware = attachRouteMeta(
+  asyncHandler(async (req, res, next) => {
+    await runAuthMiddleware(req, res, next);
+  }),
+  { auth: true },
+);
 
 async function runAuthMiddleware(
   req: Request,
