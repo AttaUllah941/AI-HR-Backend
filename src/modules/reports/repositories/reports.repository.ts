@@ -378,44 +378,41 @@ export class ReportsRepository {
     });
   }
 
-  headcountTrend(companyId: string, months = 6) {
+  /**
+   * Hires and active headcount at the end of each of the last `months` months, in ONE query
+   * (generate_series x employees with FILTER aggregates) instead of 2 counts per month.
+   * Month boundaries are UTC, matching how dates are stored.
+   */
+  async headcountTrend(companyId: string, months = 6) {
     const now = new Date();
-    const points: Array<{ year: number; month: number; from: Date; to: Date }> = [];
-    for (let i = months - 1; i >= 0; i -= 1) {
-      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
-      const year = d.getUTCFullYear();
-      const month = d.getUTCMonth() + 1;
-      const from = new Date(Date.UTC(year, month - 1, 1));
-      const to = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
-      points.push({ year, month, from, to });
-    }
-    return Promise.all(
-      points.map(async (p) => {
-        const [hired, active] = await Promise.all([
-          prisma.employee.count({
-            where: {
-              companyId,
-              ...notDeleted,
-              joinDate: { gte: p.from, lte: p.to },
-            },
-          }),
-          prisma.employee.count({
-            where: {
-              companyId,
-              ...notDeleted,
-              status: 'ACTIVE',
-              OR: [{ joinDate: null }, { joinDate: { lte: p.to } }],
-              AND: [
-                {
-                  OR: [{ exitDate: null }, { exitDate: { gt: p.to } }],
-                },
-              ],
-            },
-          }),
-        ]);
-        return { year: p.year, month: p.month, hired, active };
-      }),
-    );
+    const first = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months - 1), 1));
+    const last = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const iso = (d: Date) => d.toISOString().slice(0, 10);
+
+    const rows = await prisma.$queryRaw<Array<{ month: Date; hired: number; active: number }>>`
+      SELECT
+        m.month AS "month",
+        (COUNT(*) FILTER (
+          WHERE e."joinDate" >= m.month AND e."joinDate" < m.month + interval '1 month'
+        ))::int AS "hired",
+        (COUNT(*) FILTER (
+          WHERE e.status = 'ACTIVE'
+            AND (e."joinDate" IS NULL OR e."joinDate" < m.month + interval '1 month')
+            AND (e."exitDate" IS NULL OR e."exitDate" >= m.month + interval '1 month')
+        ))::int AS "active"
+      FROM generate_series(${iso(first)}::timestamp, ${iso(last)}::timestamp, interval '1 month') AS m(month)
+      LEFT JOIN employees e
+        ON e."companyId" = ${companyId} AND e."deletedAt" IS NULL
+      GROUP BY m.month
+      ORDER BY m.month
+    `;
+
+    return rows.map((row) => ({
+      year: row.month.getUTCFullYear(),
+      month: row.month.getUTCMonth() + 1,
+      hired: row.hired,
+      active: row.active,
+    }));
   }
 
   // —— Export logs ——
