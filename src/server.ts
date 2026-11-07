@@ -32,6 +32,11 @@ async function bootstrap(): Promise<void> {
     });
   });
 
+  // Behind nginx / a load balancer the proxy's idle timeout is usually 60 s; keep ours longer
+  // so a reused connection is never closed by us mid-request (avoids sporadic 502s).
+  server.keepAliveTimeout = 65_000;
+  server.headersTimeout = 66_000;
+
   const shutdown = async (signal: string) => {
     logger.info(`${signal} received — shutting down`);
     server.close(async () => {

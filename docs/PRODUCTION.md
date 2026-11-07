@@ -166,3 +166,23 @@ Full module tables remain in the root `README.md`.
 ## Known local limitations
 
 Embedded/dev Postgres corruption (missing relation files) can block migrations/seeds on developer machines. Production should use Docker Postgres or a managed instance — not the embedded `data/pg_fresh` directory.
+
+## Performance and observability settings
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `DB_POOL_MAX` | `10` | Connections per API instance. Instances x `DB_POOL_MAX` must stay below PostgreSQL `max_connections` (default 100). |
+| `DB_POOL_IDLE_TIMEOUT_MS` | `30000` | Idle connections are closed after this long (`0` = never). |
+| `DB_POOL_CONNECTION_TIMEOUT_MS` | `5000` | How long a query waits for a free connection before failing. |
+| `DB_SLOW_QUERY_MS` | `200` | Queries slower than this are logged as `Slow query` warnings (SQL text only, never bound parameters) and counted in `db_slow_queries_total`. |
+| `REQUEST_TIMEOUT_MS` | `30000` | Requests exceeding it get `503 REQUEST_TIMEOUT`. Payroll processing, exports, AI and uploads have longer built-in budgets (`src/middleware/request-timeout.middleware.ts`). Keep it below nginx `proxy_read_timeout` (60 s). |
+| `COMPRESSION_ENABLED` | `true` | **Set to `false` behind the provided nginx**, which already gzips `application/json` (`nginx.conf`, `gzip on`). Leave `true` when the API is reached directly. |
+| `METRICS_ENABLED` | `false` | Exposes Prometheus metrics at `GET /metrics` (outside `/api/v1`). |
+| `METRICS_TOKEN` | empty | When set, scrapers must send `Authorization: Bearer <token>`. When empty, only loopback / private-network addresses may scrape. nginx does not proxy `/metrics` (only `/api/`), so it is reachable on the internal Docker network only. |
+
+### HTTP behaviour
+
+- **Access logs** are structured JSON (pino-http) and carry the request id, which is also returned in the `X-Request-Id` response header. `Authorization` and cookie headers are redacted. Health probes and `/metrics` are not logged.
+- **Lookup lists** (departments, branches, teams, designations, leave types, shifts, holidays, roles, permissions) are sent with `Cache-Control: private, no-cache` and an ETag. Browsers revalidate each time and receive `304 Not Modified` when nothing changed, so a list is never stale after an edit.
+- **Pagination:** every list endpoint rejects `page < 1` and `pageSize > 100` with `400`. Audit logs, attendance records and notifications also support cursor pagination: add `?cursor=` (empty for the first page) and follow `pagination.nextCursor` while `pagination.hasMore` is true.
+- **Idempotency:** `POST /payroll/runs` and `POST /recruitment/offers/:id/send` accept an optional `Idempotency-Key` header (8-128 characters). Retrying with the same key and payload replays the first response (`Idempotency-Replayed: true`); a different payload gets `422`; a concurrent duplicate gets `409`. Stored responses expire after 24 hours (`DELETE FROM idempotency_keys WHERE "expiresAt" < now()` may be run periodically).
