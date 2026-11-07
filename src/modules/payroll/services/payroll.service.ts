@@ -659,13 +659,16 @@ export class PayrollService {
         }
         await this.repo.deleteRunEntries(id, tx);
 
-        for (const row of computed) {
-          const entry = await this.repo.createEntry(
-            {
-              companyId,
-              payrollRunId: id,
+        await this.repo.createRunEntriesBatch(
+          {
+            companyId,
+            payrollRunId: id,
+            year: existing.year,
+            month: existing.month,
+            rows: computed.map((row) => ({
               employeeId: row.structure.employeeId,
-              basicSalary: row.basic,
+              currency: row.structure.currency,
+              basic: row.basic,
               totalAllowances: row.totalAllowances,
               totalBonuses: row.totalBonuses,
               totalDeductions: row.totalDeductions,
@@ -673,42 +676,26 @@ export class PayrollService {
               grossPay: row.grossPay,
               netPay: row.netPay,
               lines: row.lines,
-            },
-            tx,
-          );
-
-          await this.repo.createPayslip(
-            {
-              companyId,
-              employeeId: row.structure.employeeId,
-              payrollEntryId: entry.id,
-              year: existing.year,
-              month: existing.month,
-              basicSalary: row.basic,
-              totalAllowances: row.totalAllowances,
-              totalBonuses: row.totalBonuses,
-              totalDeductions: row.totalDeductions,
-              totalTax: row.totalTax,
-              grossPay: row.grossPay,
-              netPay: row.netPay,
-              currency: row.structure.currency,
-            },
-            tx,
-          );
-        }
+            })),
+          },
+          tx,
+        );
 
         await this.repo.updateRun(id, { status: 'COMPLETED', processedAt: new Date() }, tx);
+        // Same transaction as the state change: maker-checker approval relies on this row existing.
+        await this.repo.createAuditLog(
+          {
+            actorId: actor.id,
+            action: 'payroll.run.process',
+            entityType: 'PayrollRun',
+            entityId: id,
+            metadata: { employeeCount: byEmployee.size },
+          },
+          tx,
+        );
       },
       { timeout: 120_000, maxWait: 10_000 },
     );
-
-    await this.repo.createAuditLog({
-      actorId: actor.id,
-      action: 'payroll.run.process',
-      entityType: 'PayrollRun',
-      entityId: id,
-      metadata: { employeeCount: byEmployee.size },
-    });
 
     return this.repo.findRun(companyId, id);
   }
@@ -736,21 +723,28 @@ export class PayrollService {
       }
     }
 
-    const claimed = await this.repo.transitionRun(id, companyId, ['COMPLETED'], {
-      status: 'APPROVED',
-      approvedAt: new Date(),
-      approvedBy: actor.id,
+    await this.repo.runTransaction(async (tx) => {
+      const claimed = await this.repo.transitionRun(
+        id,
+        companyId,
+        ['COMPLETED'],
+        { status: 'APPROVED', approvedAt: new Date(), approvedBy: actor.id },
+        tx,
+      );
+      if (claimed === 0) {
+        throw new ConflictError('Payroll run status changed; reload and try again');
+      }
+      await this.repo.createAuditLog(
+        {
+          actorId: actor.id,
+          action: 'payroll.run.approve',
+          entityType: 'PayrollRun',
+          entityId: id,
+        },
+        tx,
+      );
     });
-    if (claimed === 0) throw new ConflictError('Payroll run status changed; reload and try again');
-    const run = await this.repo.findRun(companyId, id);
-
-    await this.repo.createAuditLog({
-      actorId: actor.id,
-      action: 'payroll.run.approve',
-      entityType: 'PayrollRun',
-      entityId: id,
-    });
-    return run;
+    return this.repo.findRun(companyId, id);
   }
 
   async markRunPaid(actor: AuthActor, id: string) {
@@ -774,13 +768,15 @@ export class PayrollService {
         throw new ConflictError('Payroll run status changed; reload and try again');
       }
       await this.repo.markPayslipsPaidForRun(id, paidAt, tx);
-    });
-
-    await this.repo.createAuditLog({
-      actorId: actor.id,
-      action: 'payroll.run.mark_paid',
-      entityType: 'PayrollRun',
-      entityId: id,
+      await this.repo.createAuditLog(
+        {
+          actorId: actor.id,
+          action: 'payroll.run.mark_paid',
+          entityType: 'PayrollRun',
+          entityId: id,
+        },
+        tx,
+      );
     });
     return this.repo.findRun(companyId, id);
   }
@@ -805,15 +801,17 @@ export class PayrollService {
         throw new ConflictError('Payroll run status changed; reload and try again');
       }
       await this.repo.voidPayslipsForRun(id, tx);
+      await this.repo.createAuditLog(
+        {
+          actorId: actor.id,
+          action: 'payroll.run.cancel',
+          entityType: 'PayrollRun',
+          entityId: id,
+        },
+        tx,
+      );
     });
-    const run = await this.repo.findRun(companyId, id);
-    await this.repo.createAuditLog({
-      actorId: actor.id,
-      action: 'payroll.run.cancel',
-      entityType: 'PayrollRun',
-      entityId: id,
-    });
-    return run;
+    return this.repo.findRun(companyId, id);
   }
 
   async listEntries(actor: AuthActor, runId: string, params: Record<string, string | undefined>) {

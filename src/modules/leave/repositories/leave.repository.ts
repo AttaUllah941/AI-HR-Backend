@@ -473,14 +473,17 @@ export class LeaveRepository {
     });
   }
 
-  createAuditLog(input: {
-    actorId: string;
-    action: string;
-    entityType: string;
-    entityId: string;
-    metadata?: Prisma.InputJsonValue;
-  }) {
-    return prisma.auditLog.create({
+  createAuditLog(
+    input: {
+      actorId: string;
+      action: string;
+      entityType: string;
+      entityId: string;
+      metadata?: Prisma.InputJsonValue;
+    },
+    db: DbClient = prisma,
+  ) {
+    return db.auditLog.create({
       data: {
         actorId: input.actorId,
         action: input.action,

@@ -687,13 +687,16 @@ export class LeaveService {
         tx,
       );
       await this.repo.movePendingToUsed(balance.id, existing.days, tx);
-    });
-
-    await this.repo.createAuditLog({
-      actorId: actor.id,
-      action: 'leave.request.approve',
-      entityType: 'LeaveRequest',
-      entityId: id,
+      // Same transaction as the status/balance change so they can never diverge.
+      await this.repo.createAuditLog(
+        {
+          actorId: actor.id,
+          action: 'leave.request.approve',
+          entityType: 'LeaveRequest',
+          entityId: id,
+        },
+        tx,
+      );
     });
     return this.repo.findRequest(companyId, id);
   }
@@ -735,13 +738,16 @@ export class LeaveService {
       if (balance) {
         await this.repo.adjustBalancePending(balance.id, -existing.days, tx);
       }
-    });
-
-    await this.repo.createAuditLog({
-      actorId: actor.id,
-      action: 'leave.request.reject',
-      entityType: 'LeaveRequest',
-      entityId: id,
+      // Same transaction as the status/balance change so they can never diverge.
+      await this.repo.createAuditLog(
+        {
+          actorId: actor.id,
+          action: 'leave.request.reject',
+          entityType: 'LeaveRequest',
+          entityId: id,
+        },
+        tx,
+      );
     });
     return this.repo.findRequest(companyId, id);
   }
@@ -798,13 +804,16 @@ export class LeaveService {
           await this.repo.adjustBalanceUsed(balance.id, -existing.days, tx);
         }
       }
-    });
-
-    await this.repo.createAuditLog({
-      actorId: actor.id,
-      action: 'leave.request.cancel',
-      entityType: 'LeaveRequest',
-      entityId: id,
+      // Same transaction as the status/balance change so they can never diverge.
+      await this.repo.createAuditLog(
+        {
+          actorId: actor.id,
+          action: 'leave.request.cancel',
+          entityType: 'LeaveRequest',
+          entityId: id,
+        },
+        tx,
+      );
     });
     return this.repo.findRequest(companyId, id);
   }

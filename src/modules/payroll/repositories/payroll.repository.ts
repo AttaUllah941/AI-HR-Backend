@@ -9,6 +9,7 @@ import type {
   UpdateSalaryStructureInput,
   UpdateTaxSettingInput,
 } from '../validators/payroll.validators.js';
+import { randomUUID } from 'node:crypto';
 
 const notDeleted = { deletedAt: null };
 
@@ -511,6 +512,85 @@ export class PayrollRepository {
     return db.payrollEntry.deleteMany({ where: { payrollRunId } });
   }
 
+  /**
+   * Inserts every entry, its component lines and its payslip with three createMany calls
+   * (instead of two inserts per employee plus nested line creates). Ids are generated here so the
+   * rows can reference each other without reading anything back.
+   */
+  async createRunEntriesBatch(
+    args: {
+      companyId: string;
+      payrollRunId: string;
+      year: number;
+      month: number;
+      rows: Array<{
+        employeeId: string;
+        currency: string;
+        basic: number;
+        totalAllowances: number;
+        totalBonuses: number;
+        totalDeductions: number;
+        totalTax: number;
+        grossPay: number;
+        netPay: number;
+        lines: { componentId?: string | null; kind: SalaryComponentKind; label: string; amount: number }[];
+      }>;
+    },
+    db: DbClient = prisma,
+  ): Promise<void> {
+    if (args.rows.length === 0) {
+      return;
+    }
+    const withIds = args.rows.map((row) => ({ ...row, entryId: randomUUID() }));
+
+    await db.payrollEntry.createMany({
+      data: withIds.map((row) => ({
+        id: row.entryId,
+        companyId: args.companyId,
+        payrollRunId: args.payrollRunId,
+        employeeId: row.employeeId,
+        basicSalary: row.basic,
+        totalAllowances: row.totalAllowances,
+        totalBonuses: row.totalBonuses,
+        totalDeductions: row.totalDeductions,
+        totalTax: row.totalTax,
+        grossPay: row.grossPay,
+        netPay: row.netPay,
+      })),
+    });
+
+    const lines = withIds.flatMap((row) =>
+      row.lines.map((line) => ({
+        payrollEntryId: row.entryId,
+        componentId: line.componentId ?? null,
+        kind: line.kind,
+        label: line.label,
+        amount: line.amount,
+      })),
+    );
+    if (lines.length > 0) {
+      await db.payrollEntryLine.createMany({ data: lines });
+    }
+
+    await db.payslip.createMany({
+      data: withIds.map((row) => ({
+        companyId: args.companyId,
+        employeeId: row.employeeId,
+        payrollEntryId: row.entryId,
+        year: args.year,
+        month: args.month,
+        basicSalary: row.basic,
+        totalAllowances: row.totalAllowances,
+        totalBonuses: row.totalBonuses,
+        totalDeductions: row.totalDeductions,
+        totalTax: row.totalTax,
+        grossPay: row.grossPay,
+        netPay: row.netPay,
+        currency: row.currency,
+      })),
+    });
+  }
+
   createEntry(
     data: {
       companyId: string;
@@ -751,14 +831,17 @@ export class PayrollRepository {
     });
   }
 
-  createAuditLog(input: {
-    actorId: string;
-    action: string;
-    entityType: string;
-    entityId: string;
-    metadata?: Prisma.InputJsonValue;
-  }) {
-    return prisma.auditLog.create({
+  createAuditLog(
+    input: {
+      actorId: string;
+      action: string;
+      entityType: string;
+      entityId: string;
+      metadata?: Prisma.InputJsonValue;
+    },
+    db: DbClient = prisma,
+  ) {
+    return db.auditLog.create({
       data: {
         actorId: input.actorId,
         action: input.action,
