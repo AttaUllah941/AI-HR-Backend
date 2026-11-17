@@ -1,0 +1,26 @@
+# Production-oriented overrides (internal Postgres + API; traffic via nginx/web only).
+# Usage:
+#   cp .env.production.example .env.production
+#   # fill JWTs / DB password (openssl rand -hex 32)
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --build
+#
+# Requires Docker Compose v2.24+ for `ports: !reset []`.
+
+services:
+  postgres:
+    # Clear host port publishing from the base compose file
+    ports: !reset []
+    restart: always
+
+  api:
+    restart: always
+    # Do not publish API on the host — clients use nginx (/api/)
+    ports: !reset []
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+  web:
+    restart: always

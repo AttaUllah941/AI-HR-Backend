@@ -1,0 +1,99 @@
+import { z } from 'zod';
+import { cursorQuery, pageQuery, pageSizeQuery } from '../../../validators/pagination.validators.js';
+
+export const notificationCategorySchema = z.enum([
+  'SYSTEM',
+  'LEAVE',
+  'ATTENDANCE',
+  'PAYROLL',
+  'RECRUITMENT',
+  'PERFORMANCE',
+  'AI',
+  'SECURITY',
+  'OTHER',
+]);
+
+export const notificationChannelSchema = z.enum(['IN_APP', 'EMAIL', 'PUSH']);
+
+export const notificationStatusSchema = z.enum(['PENDING', 'SENT', 'FAILED', 'READ']);
+
+export const pushPlatformSchema = z.enum(['WEB', 'IOS', 'ANDROID']);
+
+export const sendNotificationSchema = z.object({
+  userId: z.string().cuid(),
+  title: z.string().min(1).max(200),
+  body: z.string().min(1).max(4000),
+  category: notificationCategorySchema.default('SYSTEM'),
+  channels: z.array(notificationChannelSchema).min(1).default(['IN_APP']),
+  templateCode: z.string().min(1).max(80).optional(),
+  data: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const createTemplateSchema = z.object({
+  code: z.string().min(1).max(80),
+  name: z.string().min(1).max(120),
+  category: notificationCategorySchema.default('SYSTEM'),
+  channel: notificationChannelSchema.default('IN_APP'),
+  subject: z.string().max(200).optional().nullable(),
+  bodyTemplate: z.string().min(1).max(8000),
+  isActive: z.boolean().optional(),
+});
+
+export const updateTemplateSchema = createTemplateSchema.partial();
+
+export const upsertPreferencesSchema = z.object({
+  preferences: z
+    .array(
+      z.object({
+        category: notificationCategorySchema,
+        inAppEnabled: z.boolean(),
+        emailEnabled: z.boolean(),
+        pushEnabled: z.boolean(),
+      }),
+    )
+    .min(1),
+});
+
+export const registerDeviceSchema = z.object({
+  token: z.string().min(8).max(512),
+  platform: pushPlatformSchema.default('WEB'),
+  label: z.string().max(120).optional().nullable(),
+});
+
+const emptyToUndefined = (value: unknown) =>
+  value === '' || value === null || value === undefined ? undefined : value;
+
+const optionalEnum = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess(emptyToUndefined, schema.optional());
+
+const optionalBool = z.preprocess((value) => {
+  if (value === '' || value === null || value === undefined) return undefined;
+  if (value === true || value === 'true' || value === '1') return true;
+  if (value === false || value === 'false' || value === '0') return false;
+  return value;
+}, z.boolean().optional());
+
+export const feedQuerySchema = z.object({
+  limit: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(1).max(20).optional(),
+  ),
+});
+
+export const listNotificationsQuerySchema = z.object({
+  cursor: cursorQuery,
+  category: optionalEnum(notificationCategorySchema),
+  channel: optionalEnum(notificationChannelSchema),
+  status: optionalEnum(notificationStatusSchema),
+  unreadOnly: optionalBool,
+  page: pageQuery,
+  pageSize: pageSizeQuery,
+});
+
+export type SendNotificationInput = z.infer<typeof sendNotificationSchema>;
+export type CreateTemplateInput = z.infer<typeof createTemplateSchema>;
+export type UpdateTemplateInput = z.infer<typeof updateTemplateSchema>;
+export type UpsertPreferencesInput = z.infer<typeof upsertPreferencesSchema>;
+export type RegisterDeviceInput = z.infer<typeof registerDeviceSchema>;
+export type FeedQueryInput = z.infer<typeof feedQuerySchema>;
+export type ListNotificationsQueryInput = z.infer<typeof listNotificationsQuerySchema>;

@@ -34,6 +34,54 @@ export class AuthRepository {
     });
   }
 
+  /** Hydrates the user and confirms the given session is still ACTIVE, in one query. */
+  findByIdWithActiveSession(id: string, sessionId: string) {
+    return prisma.user.findFirst({
+      where: { id, deletedAt: null },
+      include: {
+        ...userAuthInclude,
+        sessions: {
+          where: { id: sessionId, status: 'ACTIVE', expiresAt: { gt: new Date() } },
+          select: { id: true },
+          take: 1,
+        },
+      },
+    });
+  }
+
+  /** Atomically creates company (optional), security policy, and user with a role. */
+  registerUser(data: {
+    email: string;
+    passwordHash: string;
+    firstName: string;
+    lastName: string;
+    companyName?: string;
+    roleCode: string;
+    status: UserStatus;
+  }) {
+    return prisma.$transaction(async (tx) => {
+      const role = await tx.role.findUniqueOrThrow({ where: { code: data.roleCode } });
+      let companyId: string | undefined;
+      if (data.companyName) {
+        const company = await tx.company.create({ data: { name: data.companyName } });
+        companyId = company.id;
+        await tx.companySecurityPolicy.create({ data: { companyId } });
+      }
+      return tx.user.create({
+        data: {
+          email: data.email.toLowerCase(),
+          passwordHash: data.passwordHash,
+          firstName: data.firstName,
+          lastName: data.lastName,
+          companyId,
+          status: data.status,
+          userRoles: { create: [{ roleId: role.id }] },
+        },
+        include: userAuthInclude,
+      });
+    });
+  }
+
   async createUser(data: {
     email: string;
     passwordHash: string;
@@ -119,10 +167,37 @@ export class AuthRepository {
     });
   }
 
+  /** Rotates the refresh hash only if it still matches (guards against concurrent reuse). */
+  async rotateSession(
+    id: string,
+    currentHash: string,
+    data: { refreshTokenHash: string; expiresAt: Date },
+  ): Promise<boolean> {
+    const result = await prisma.session.updateMany({
+      where: { id, refreshTokenHash: currentHash, status: 'ACTIVE' },
+      data,
+    });
+    return result.count === 1;
+  }
+
+  revokeSessionForUser(userId: string, id: string) {
+    return prisma.session.updateMany({
+      where: { id, userId, status: 'ACTIVE' },
+      data: { status: 'REVOKED', revokedAt: new Date() },
+    });
+  }
+
   revokeUserSessions(userId: string) {
     return prisma.session.updateMany({
       where: { userId, status: 'ACTIVE' },
       data: { status: 'REVOKED', revokedAt: new Date() },
+    });
+  }
+
+  invalidatePasswordResetTokens(userId: string) {
+    return prisma.passwordResetToken.updateMany({
+      where: { userId, usedAt: null },
+      data: { usedAt: new Date() },
     });
   }
 
@@ -137,6 +212,16 @@ export class AuthRepository {
       where: { tokenHash },
       include: { user: true },
     });
+  }
+
+  /** Consumes a reset token only if it is still unused and unexpired. */
+  async consumePasswordResetToken(id: string): Promise<boolean> {
+    const now = new Date();
+    const result = await prisma.passwordResetToken.updateMany({
+      where: { id, usedAt: null, expiresAt: { gt: now } },
+      data: { usedAt: now },
+    });
+    return result.count === 1;
   }
 
   markPasswordResetUsed(id: string) {
@@ -176,5 +261,35 @@ export class AuthRepository {
     userAgent?: string;
   }) {
     return prisma.auditLog.create({ data });
+  }
+
+  getSecurityPolicy(companyId: string) {
+    return prisma.companySecurityPolicy.upsert({
+      where: { companyId },
+      create: { companyId },
+      update: {},
+    });
+  }
+
+  createLoginAttempt(data: {
+    companyId?: string | null;
+    userId?: string | null;
+    email: string;
+    success: boolean;
+    reason?: string | null;
+    ipAddress?: string;
+    userAgent?: string;
+  }) {
+    return prisma.loginAttempt.create({
+      data: {
+        companyId: data.companyId ?? null,
+        userId: data.userId ?? null,
+        email: data.email.toLowerCase(),
+        success: data.success,
+        reason: data.reason ?? null,
+        ipAddress: data.ipAddress ?? null,
+        userAgent: data.userAgent ?? null,
+      },
+    });
   }
 }

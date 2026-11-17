@@ -1,0 +1,188 @@
+# Zenith HR — Production Deployment Guide
+
+This document covers production environment configuration, Docker deployment, CI/CD, logging/monitoring, database backups, and a final readiness checklist for the Zenith Enterprise AI HR platform.
+
+## Architecture (runtime)
+
+```
+Browser
+  └─► nginx (web container :80)
+        ├─ static Angular SPA (production build)
+        └─ /api/*  ──proxy──► Express API (api container :3000)
+                                  └─► PostgreSQL 16 (postgres)
+```
+
+| Service | Image / build | Role |
+|---------|---------------|------|
+| `web` | `AI-HR-Frontend` Dockerfile | SPA + reverse proxy to API |
+| `api` | `AI-HR-Backend` Dockerfile | REST API, migrations on start |
+| `postgres` | `postgres:16-alpine` | Primary datastore |
+| `db-backup` | compose profile `backup` | One-shot `pg_dump` → `./backups` |
+
+Repos: Angular 21 · Node.js 22 · Express 5 · Prisma 7 · PostgreSQL 16
+
+## Environment configuration
+
+1. Local / compose defaults: copy `.env.example` → `.env`
+2. Production: copy `.env.production.example` → `.env.production` and replace every placeholder
+
+### Critical production rules
+
+| Variable | Rule |
+|----------|------|
+| `NODE_ENV` | Must be `production` |
+| `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | ≥ 32 chars, distinct, no weak markers (`change-me`, `example`, `replace-with`, `openssl-rand`, …). Startup refuses otherwise. Generate with `openssl rand -hex 32`. |
+| `MFA_ENCRYPTION_KEY` | **Required.** 32 bytes as 64 hex chars or base64 (`openssl rand -hex 32`). AES-256-GCM key for MFA secrets at rest (`enc:v1:` prefix). Legacy plaintext secrets are re-encrypted on the next successful MFA verify. Outside production it falls back to a key derived from `JWT_ACCESS_SECRET`. Losing/changing the key invalidates stored MFA secrets. |
+| `EMAIL_PROVIDER` | Must be `smtp`. `console` logs temporary passwords/reset links, so startup refuses unless `ALLOW_CONSOLE_EMAIL=true` (staging only). |
+| `DATABASE_URL` | Compose **overrides** this from `POSTGRES_*` when using docker-compose — keep password values aligned |
+| `CORS_ORIGIN` | Exact public web origin(s), comma-separated |
+| `APP_URL` | Public SPA URL |
+| `FILE_STORAGE_ROOT` | Persist via volume (`/app/uploads` in compose); entrypoint chowns for non-root |
+| `LOG_TO_FILE` | Optional (`true` to write Winston files under `/app/logs`; prod defaults to stdout only) |
+| `AI_API_KEY` / `EMAIL_*` | Server-side only — never ship to Angular |
+
+Frontend production builds use relative `apiBaseUrl: '/api/v1'` so the browser talks to the same origin; nginx proxies `/api/` to the API service (`client_max_body_size` 11m to match `FILE_MAX_BYTES`).
+
+**Layout:** Compose builds the web image from `../AI-HR-Frontend/AI-HR-Frontend` (sibling of the backend repo).
+
+## Deploy with Docker Compose
+
+From `AI-HR-Backend` (frontend path is relative):
+
+```bash
+# Development-style full stack (Postgres published on host)
+cp .env.example .env   # set strong JWTs even for local compose
+docker compose up -d --build
+
+# Production overlays (Postgres + API not published; traffic via web/nginx)
+cp .env.production.example .env.production
+# edit secrets (openssl rand -hex 32 for JWTs)…
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --build
+```
+
+Verify (production overlay — hit nginx, not the API host port):
+
+```bash
+curl -s http://localhost:8080/healthz
+curl -s http://localhost:8080/api/v1/health/live
+curl -s http://localhost:8080/api/v1/health/ready
+```
+
+For local base compose (API published), you can also use `http://localhost:3000/api/v1/health/*`.
+
+Open the SPA at `http://localhost:8080` (or your `WEB_PORT`).
+
+API container runs `prisma migrate deploy` before listening. The production image does **not** include `tsx`, so seed from the host or a one-off Node image:
+
+```bash
+# From AI-HR-Backend with .env pointing at compose Postgres
+npm run prisma:seed
+
+# Or one-off (dev deps available):
+docker compose run --rm --entrypoint "" -e DATABASE_URL=postgresql://zenith:…@postgres:5432/zenith_hr?schema=public api \
+  sh -c "npm install tsx --no-save && npx prisma db seed"
+```
+
+Do **not** run the demo seed against a real production tenant without rotating those passwords.
+
+## CI/CD
+
+GitHub Actions workflows:
+
+| Repo | Workflow | Jobs |
+|------|----------|------|
+| Backend | `.github/workflows/ci.yml` | `npm ci` → Prisma generate → lint → tests → build |
+| Frontend | `.github/workflows/ci.yml` | `npm ci` → `test:ci` → production build |
+
+Suggested release flow:
+
+1. Merge to `main` after green CI
+2. Build/push images (or `docker compose build` on the host)
+3. Apply env secrets via your secret store / `.env.production` on the server
+4. Rolling restart: `docker compose … up -d`
+5. Confirm `/health/ready` then smoke-login
+
+## Logging & monitoring
+
+| Signal | Where |
+|--------|-------|
+| Structured JSON logs (prod) | stdout by default; set `LOG_TO_FILE=true` for `logs/*.log` (volume `zenith_api_logs`) |
+| Access logs | Morgan → Winston (`rid=` request id) |
+| Correlation | `X-Request-Id` request/response header |
+| Liveness | `GET /api/v1/health/live` (excluded from global rate limit) |
+| Readiness | `GET /api/v1/health/ready` (excluded from global rate limit) |
+| Full health | `GET /api/v1/health` |
+| Process metrics | `GET /api/v1/health/metrics` (uptime, memory; keep API internal) |
+| Web probe | `GET /healthz` on nginx |
+
+Wire your orchestrator/LB health checks to **live** (restart decision) and **ready** (traffic decision). Scrape **metrics** with your preferred agent or synthetic monitor; for Prometheus-native exporters, add a sidecar later if needed. Prefer terminating TLS (and optional HSTS) at the load balancer in front of nginx.
+
+## Database backup strategy
+
+| Method | Command |
+|--------|---------|
+| Compose one-shot | `docker compose --profile backup run --rm db-backup` |
+| Host script (Linux/macOS) | `./scripts/backup-db.sh` |
+| Host script (Windows) | `.\scripts\backup-db.ps1` |
+
+Recommendations:
+
+- Retain at least **7 daily** and **4 weekly** dumps off-box (object storage)
+- Test restore quarterly: `gunzip -c file.sql.gz | psql $DATABASE_URL`
+- Prefer provider snapshots (RDS, Cloud SQL, Azure Flexible Server) **plus** logical dumps
+- Encrypt backups at rest; never store dumps in the git repo (`backups/` is gitignored)
+- Production compose overlay uses `ports: !reset []` on **Postgres and API** so only nginx (`web`) is published (requires Docker Compose v2.24+)
+
+## API surface (ops)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/` | Welcome / version |
+| GET | `/api/v1/health` | Health summary |
+| GET | `/api/v1/health/live` | Liveness |
+| GET | `/api/v1/health/ready` | Readiness (DB) |
+| GET | `/api/v1/health/metrics` | Process metrics |
+| * | `/api/v1/*` | Application modules (auth, HR, AI, …) |
+
+Full module tables remain in the root `README.md`.
+
+## Production readiness checklist
+
+- [ ] Strong, unique JWT secrets set; app starts without secret assertion failure
+- [ ] `NODE_ENV=production`; CORS locked to real origins
+- [ ] TLS terminated at load balancer / reverse proxy in front of nginx (HSTS at the edge)
+- [ ] Postgres **and** API not exposed publicly; credentials rotated from defaults
+- [ ] Persistent volumes for Postgres data + API uploads (+ logs if `LOG_TO_FILE=true`)
+- [ ] Migrations applied (`migrate deploy` on API start or release job)
+- [ ] Backup job scheduled and restore tested (`.sql.gz` via compose/script)
+- [ ] Health checks configured (live/ready) through nginx or internal network
+- [ ] CI green on the release commit
+- [ ] Demo passwords changed or seed skipped in production
+- [ ] AI/email providers configured or left on safe mocks/console sinks intentionally
+- [ ] Rate limits reviewed for expected traffic (health paths are skipped)
+- [ ] Log aggregation / alerting hooked to error volume and 5xx rates
+- [ ] nginx `client_max_body_size` ≥ API `FILE_MAX_BYTES`
+
+## Known local limitations
+
+Embedded/dev Postgres corruption (missing relation files) can block migrations/seeds on developer machines. Production should use Docker Postgres or a managed instance — not the embedded `data/pg_fresh` directory.
+
+## Performance and observability settings
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `DB_POOL_MAX` | `10` | Connections per API instance. Instances x `DB_POOL_MAX` must stay below PostgreSQL `max_connections` (default 100). |
+| `DB_POOL_IDLE_TIMEOUT_MS` | `30000` | Idle connections are closed after this long (`0` = never). |
+| `DB_POOL_CONNECTION_TIMEOUT_MS` | `5000` | How long a query waits for a free connection before failing. |
+| `DB_SLOW_QUERY_MS` | `200` | Queries slower than this are logged as `Slow query` warnings (SQL text only, never bound parameters) and counted in `db_slow_queries_total`. |
+| `REQUEST_TIMEOUT_MS` | `30000` | Requests exceeding it get `503 REQUEST_TIMEOUT`. Payroll processing, exports, AI and uploads have longer built-in budgets (`src/middleware/request-timeout.middleware.ts`). Keep it below nginx `proxy_read_timeout` (60 s). |
+| `COMPRESSION_ENABLED` | `true` | **Set to `false` behind the provided nginx**, which already gzips `application/json` (`nginx.conf`, `gzip on`). Leave `true` when the API is reached directly. |
+| `METRICS_ENABLED` | `false` | Exposes Prometheus metrics at `GET /metrics` (outside `/api/v1`). |
+| `METRICS_TOKEN` | empty | When set, scrapers must send `Authorization: Bearer <token>`. When empty, only loopback / private-network addresses may scrape. nginx does not proxy `/metrics` (only `/api/`), so it is reachable on the internal Docker network only. |
+
+### HTTP behaviour
+
+- **Access logs** are structured JSON (pino-http) and carry the request id, which is also returned in the `X-Request-Id` response header. `Authorization` and cookie headers are redacted. Health probes and `/metrics` are not logged.
+- **Lookup lists** (departments, branches, teams, designations, leave types, shifts, holidays, roles, permissions) are sent with `Cache-Control: private, no-cache` and an ETag. Browsers revalidate each time and receive `304 Not Modified` when nothing changed, so a list is never stale after an edit.
+- **Pagination:** every list endpoint rejects `page < 1` and `pageSize > 100` with `400`. Audit logs, attendance records and notifications also support cursor pagination: add `?cursor=` (empty for the first page) and follow `pagination.nextCursor` while `pagination.hasMore` is true.
+- **Idempotency:** `POST /payroll/runs` and `POST /recruitment/offers/:id/send` accept an optional `Idempotency-Key` header (8-128 characters). Retrying with the same key and payload replays the first response (`Idempotency-Replayed: true`); a different payload gets `422`; a concurrent duplicate gets `409`. Stored responses expire after 24 hours (`DELETE FROM idempotency_keys WHERE "expiresAt" < now()` may be run periodically).

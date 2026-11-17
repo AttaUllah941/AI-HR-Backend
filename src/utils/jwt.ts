@@ -6,6 +6,7 @@ export interface AccessTokenPayload {
   email: string;
   roles: string[];
   permissions: string[];
+  sid?: string;
   type: 'access';
 }
 
@@ -13,13 +14,19 @@ export interface RefreshTokenPayload {
   sub: string;
   sid: string;
   type: 'refresh';
+  iat?: number;
+  exp?: number;
 }
 
 export interface MfaChallengePayload {
   sub: string;
   email: string;
+  remember?: boolean;
   type: 'mfa_challenge';
 }
+
+/** Challenge tokens use a derived secret so they can never validate as access tokens. */
+const MFA_CHALLENGE_SECRET = `${env.JWT_ACCESS_SECRET}:mfa-challenge`;
 
 export function signAccessToken(payload: Omit<AccessTokenPayload, 'type'>): string {
   return jwt.sign({ ...payload, type: 'access' }, env.JWT_ACCESS_SECRET, {
@@ -27,14 +34,17 @@ export function signAccessToken(payload: Omit<AccessTokenPayload, 'type'>): stri
   });
 }
 
-export function signRefreshToken(payload: Omit<RefreshTokenPayload, 'type'>): string {
+export function signRefreshToken(
+  payload: Omit<RefreshTokenPayload, 'type'>,
+  expiresIn: string = env.JWT_REFRESH_EXPIRES_IN,
+): string {
   return jwt.sign({ ...payload, type: 'refresh' }, env.JWT_REFRESH_SECRET, {
-    expiresIn: env.JWT_REFRESH_EXPIRES_IN as jwt.SignOptions['expiresIn'],
+    expiresIn: expiresIn as jwt.SignOptions['expiresIn'],
   });
 }
 
 export function signMfaChallengeToken(payload: Omit<MfaChallengePayload, 'type'>): string {
-  return jwt.sign({ ...payload, type: 'mfa_challenge' }, env.JWT_ACCESS_SECRET, {
+  return jwt.sign({ ...payload, type: 'mfa_challenge' }, MFA_CHALLENGE_SECRET, {
     expiresIn: '5m',
   });
 }
@@ -56,15 +66,15 @@ export function verifyRefreshToken(token: string): RefreshTokenPayload {
 }
 
 export function verifyMfaChallengeToken(token: string): MfaChallengePayload {
-  const payload = jwt.verify(token, env.JWT_ACCESS_SECRET) as MfaChallengePayload;
+  const payload = jwt.verify(token, MFA_CHALLENGE_SECRET) as MfaChallengePayload;
   if (payload.type !== 'mfa_challenge') {
     throw new Error('Invalid MFA challenge token type');
   }
   return payload;
 }
 
-export function getRefreshExpiryDate(): Date {
-  const match = /^(\d+)([smhd])$/i.exec(env.JWT_REFRESH_EXPIRES_IN);
+export function getRefreshExpiryDate(expiresIn: string = env.JWT_REFRESH_EXPIRES_IN): Date {
+  const match = /^(\d+)([smhd])$/i.exec(expiresIn);
   const now = Date.now();
   if (!match) {
     return new Date(now + 7 * 24 * 60 * 60 * 1000);

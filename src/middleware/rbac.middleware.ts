@@ -1,8 +1,9 @@
 import type { NextFunction, Request, Response } from 'express';
+import { attachRouteMeta } from '../docs/route-meta.js';
 import { ForbiddenError, UnauthorizedError } from '../utils/app-error.js';
 
 export function requirePermissions(...required: string[]) {
-  return (req: Request, _res: Response, next: NextFunction): void => {
+  const handler = (req: Request, _res: Response, next: NextFunction): void => {
     if (!req.user) {
       next(new UnauthorizedError());
       return;
@@ -17,6 +18,7 @@ export function requirePermissions(...required: string[]) {
 
     next();
   };
+  return attachRouteMeta(handler, { permissions: required });
 }
 
 export function requireRoles(...roles: string[]) {
