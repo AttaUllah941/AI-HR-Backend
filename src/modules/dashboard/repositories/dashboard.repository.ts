@@ -22,9 +22,9 @@ export class DashboardRepository {
   }
 
   // AuditLog has no companyId column; scope through the actor's company.
-  recentAuditLogs(companyId: string, limit: number) {
+  recentAuditLogs(companyId: string, limit: number, actorId?: string) {
     return prisma.auditLog.findMany({
-      where: { companyId },
+      where: { companyId, ...(actorId ? { actorId } : {}) },
       take: limit,
       orderBy: { createdAt: 'desc' },
       include: {
@@ -169,7 +169,7 @@ export class DashboardRepository {
     const departments =
       departmentIds.length > 0
         ? await prisma.department.findMany({
-            where: { id: { in: departmentIds } },
+            where: { id: { in: departmentIds }, companyId },
             select: { id: true, name: true },
           })
         : [];

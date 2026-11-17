@@ -387,7 +387,19 @@ export class PayrollService {
   // —— Tax ——
   async getTax(actor: AuthActor) {
     const companyId = await this.requireCompanyId(actor.id);
-    return this.repo.upsertTaxSetting(companyId);
+    // Read-only: a GET must not write. Return unsaved defaults until an admin saves the settings.
+    const existing = await this.repo.findTaxSetting(companyId);
+    if (existing) return existing;
+    return {
+      id: null,
+      companyId,
+      taxYear: new Date().getUTCFullYear(),
+      standardRate: 0,
+      personalAllowance: 0,
+      notes: null,
+      createdAt: null,
+      updatedAt: null,
+    };
   }
 
   async updateTax(actor: AuthActor, input: UpdateTaxSettingInput) {

@@ -737,7 +737,11 @@ export class AiService {
 
   async deleteGeneration(actor: AuthActor, id: string) {
     const companyId = await this.requireCompanyId(actor.id);
-    const generation = await this.repo.findGeneration(companyId, id);
+    const scope = this.generationScope(actor);
+    const generation = await this.repo.findGeneration(companyId, id, {
+      featureIn: scope.featureIn,
+      userId: scope.userId,
+    });
     if (!generation) throw new NotFoundError('Generation not found');
     await this.repo.softDeleteGeneration(id);
     return { id, deleted: true };

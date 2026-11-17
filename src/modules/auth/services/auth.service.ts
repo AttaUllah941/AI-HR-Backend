@@ -25,7 +25,7 @@ import {
 } from '../../../utils/mfa.js';
 import { emailService } from '../../../services/email/email.service.js';
 import { Prisma } from '@prisma/client';
-import { isDevelopment } from '../../../config/env.js';
+import { env, isDevelopment } from '../../../config/env.js';
 import {
   DEFAULT_SECURITY_POLICY,
   isClientIpAllowed,
@@ -58,7 +58,7 @@ export class AuthService {
 
   async register(input: RegisterInput, meta: { ip?: string; userAgent?: string }) {
     // Self-registration always creates a brand-new tenant that starts from the default policy.
-    if (!DEFAULT_SECURITY_POLICY.allowSelfRegistration) {
+    if (!env.ALLOW_SELF_REGISTRATION || !DEFAULT_SECURITY_POLICY.allowSelfRegistration) {
       throw new ForbiddenError('Self-registration is disabled');
     }
 

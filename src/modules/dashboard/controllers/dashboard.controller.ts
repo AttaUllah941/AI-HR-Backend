@@ -33,7 +33,11 @@ export class DashboardController {
 
   activity = async (req: Request, res: Response): Promise<void> => {
     const limit = Number(req.query.limit ?? 12);
-    const data = await this.service.getActivity(req.user!.id, Number.isFinite(limit) ? limit : 12);
+    const data = await this.service.getActivity(
+      req.user!.id,
+      Number.isFinite(limit) ? limit : 12,
+      req.user!.permissions,
+    );
     res.json(successResponse(data, 'Recent activity'));
   };
 

@@ -33,6 +33,12 @@ export const envSchema = z.object({
     .refine((v) => v === '' || parseEncryptionKey(v) !== null, {
       message: 'MFA_ENCRYPTION_KEY must be 32 bytes encoded as 64 hex chars or base64',
     }),
+  // Set to false for single-tenant deployments: /auth/register then refuses to create new tenants.
+  ALLOW_SELF_REGISTRATION: z
+    .enum(['true', 'false'])
+    .optional()
+    .default('true')
+    .transform((v) => v === 'true'),
   // Staging-only override that allows EMAIL_PROVIDER=console in production
   ALLOW_CONSOLE_EMAIL: z
     .enum(['true', 'false'])

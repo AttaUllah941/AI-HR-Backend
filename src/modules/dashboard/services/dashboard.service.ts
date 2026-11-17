@@ -308,12 +308,17 @@ export class DashboardService {
     };
   }
 
-  async getActivity(userId: string, limit = 12) {
+  /** Company-wide audit activity is limited to `settings:view` holders; everyone else sees their own. */
+  async getActivity(userId: string, limit = 12, permissions: string[] = []) {
     const company = await this.repo.findUserCompany(userId);
     if (!company?.id) {
       return { items: [] };
     }
-    const rows = await this.repo.recentAuditLogs(company.id, Math.min(Math.max(limit, 1), 50));
+    const rows = await this.repo.recentAuditLogs(
+      company.id,
+      Math.min(Math.max(limit, 1), 50),
+      permissions.includes('settings:view') ? undefined : userId,
+    );
     return {
       items: rows.map((row) => ({
         id: row.id,
