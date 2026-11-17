@@ -19,6 +19,17 @@ export function isWeakSecret(value: string): boolean {
   return WEAK_SECRET_MARKERS.some((marker) => lower.includes(marker)) || value.length < 32;
 }
 
+/** Refuses to start when Cloudinary storage is selected without its credentials. */
+export function assertStorageConfig(): void {
+  if (env.FILE_STORAGE_PROVIDER !== 'cloudinary') return;
+  if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) {
+    console.error(
+      'Refusing to start: FILE_STORAGE_PROVIDER=cloudinary requires CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET.',
+    );
+    process.exit(1);
+  }
+}
+
 export function assertProductionSecrets(): void {
   if (!isProduction) return;
 

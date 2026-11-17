@@ -3,6 +3,7 @@ import { createReadStream, existsSync, mkdirSync, promises as fs } from 'node:fs
 import path from 'node:path';
 import { env } from '../../config/env.js';
 import { NotFoundError, ValidationError } from '../../utils/app-error.js';
+import type { FileStorage, StoredBlob } from './storage.types.js';
 
 const ALLOWED_EXTENSIONS = new Set([
   '.pdf',
@@ -56,17 +57,6 @@ const EXT_MIME_HINTS: Record<string, string[]> = {
   '.jpeg': ['image/jpeg'],
   '.gif': ['image/gif'],
   '.webp': ['image/webp'],
-};
-
-export type StoredBlob = {
-  storageProvider: string;
-  storageKey: string;
-  storedName: string;
-  absolutePath: string;
-  checksumSha256: string;
-  sizeBytes: number;
-  originalName: string;
-  mimeType: string;
 };
 
 function sanitizeBaseName(name: string): string {
@@ -161,7 +151,9 @@ export function isPreviewableMime(mimeType: string): boolean {
   return PREVIEWABLE_MIME_TYPES.has(mimeType.toLowerCase());
 }
 
-export class LocalFileStorage {
+export class LocalFileStorage implements FileStorage {
+  readonly provider = 'local' as const;
+
   constructor(private readonly root = path.resolve(env.FILE_STORAGE_ROOT)) {
     if (!existsSync(this.root)) {
       mkdirSync(this.root, { recursive: true });
@@ -200,7 +192,6 @@ export class LocalFileStorage {
       storageProvider: 'local',
       storageKey,
       storedName,
-      absolutePath,
       checksumSha256: createHash('sha256').update(buffer).digest('hex'),
       sizeBytes: buffer.length,
       originalName: validated.safeOriginalName,
@@ -208,7 +199,7 @@ export class LocalFileStorage {
     };
   }
 
-  openReadStream(storageKey: string) {
+  async openReadStream(storageKey: string) {
     const absolute = this.resolveAbsolute(storageKey);
     if (!existsSync(absolute)) {
       throw new NotFoundError('Stored file is missing on disk');
@@ -224,4 +215,3 @@ export class LocalFileStorage {
   }
 }
 
-export const localFileStorage = new LocalFileStorage();

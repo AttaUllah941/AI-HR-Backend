@@ -73,6 +73,21 @@ export const envSchema = z.object({
   // Files — local disk by default; company settings may note cloud providers
   FILE_STORAGE_ROOT: z.string().optional().default('uploads'),
   FILE_MAX_BYTES: z.coerce.number().int().positive().default(10_485_760),
+  // `local` writes to FILE_STORAGE_ROOT (needs a persistent volume). `cloudinary` is for hosts with
+  // an ephemeral filesystem such as Railway; the three CLOUDINARY_* values are then required.
+  FILE_STORAGE_PROVIDER: z.enum(['local', 'cloudinary']).optional().default('local'),
+  CLOUDINARY_CLOUD_NAME: z.string().optional().default(''),
+  CLOUDINARY_API_KEY: z.string().optional().default(''),
+  CLOUDINARY_API_SECRET: z.string().optional().default(''),
+  CLOUDINARY_FOLDER: z.string().optional().default('zenith-hr'),
+  // Number of reverse proxies in front of the API (Express `trust proxy`). Railway's edge is 1.
+  // Use 'false' when the API is exposed directly. Wrong values skew per-IP rate limits and IP allowlists.
+  TRUST_PROXY: z
+    .string()
+    .regex(/^(false|\d+)$/, 'TRUST_PROXY must be "false" or a whole number of proxy hops')
+    .optional()
+    .default('1')
+    .transform((v) => (v === 'false' ? false : Number(v))),
 });
 
 const parsed = envSchema.safeParse(process.env);

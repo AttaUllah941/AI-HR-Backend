@@ -8,8 +8,8 @@ import {
 } from '../../../utils/app-error.js';
 import {
   isPreviewableMime,
-  localFileStorage,
 } from '../../../services/storage/local-file-storage.js';
+import { getActiveFileStorage, getFileStorage } from '../../../services/storage/index.js';
 import { FilesRepository } from '../repositories/files.repository.js';
 import type { UpdateFileInput, ListFilesQueryInput } from '../validators/files.validators.js';
 import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
@@ -292,7 +292,7 @@ export class FilesService {
       // Cloud providers are configured in Settings; runtime still uses local until Phase integrations.
     }
 
-    const blob = await localFileStorage.save(
+    const blob = await getActiveFileStorage().save(
       user.companyId,
       input.originalName,
       input.mimeType,
@@ -425,7 +425,7 @@ export class FilesService {
 
     await this.repo.softDelete(id);
     try {
-      await localFileStorage.remove(existing.storageKey);
+      await getFileStorage(existing.storageProvider).remove(existing.storageKey);
     } catch (error) {
       // The record is already soft-deleted; surface the orphaned blob for operators.
       logger.warn('Failed to remove stored file blob after delete', {
@@ -453,7 +453,7 @@ export class FilesService {
     const file = await this.repo.findById(user.companyId, id);
     if (!file) throw new NotFoundError('File not found');
     await this.assertCanAccess(actor, user, file);
-    const stream = localFileStorage.openReadStream(file.storageKey);
+    const stream = await getFileStorage(file.storageProvider).openReadStream(file.storageKey);
     return { file: mapFile(file), stream, disposition: 'attachment' as const };
   }
 
@@ -465,7 +465,7 @@ export class FilesService {
     if (!isPreviewableMime(file.mimeType)) {
       throw new ValidationError('This file type cannot be previewed in-browser');
     }
-    const stream = localFileStorage.openReadStream(file.storageKey);
+    const stream = await getFileStorage(file.storageProvider).openReadStream(file.storageKey);
     return { file: mapFile(file), stream, disposition: 'inline' as const };
   }
 }

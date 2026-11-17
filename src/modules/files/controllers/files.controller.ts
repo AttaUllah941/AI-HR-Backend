@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 import { successResponse } from '../../../interfaces/api-response.js';
-import type { ReadStream } from 'node:fs';
+import type { Readable } from 'node:stream';
 import { logger } from '../../../config/logger.js';
 import { errorResponse } from '../../../interfaces/api-response.js';
 import { ValidationError } from '../../../utils/app-error.js';
@@ -20,7 +20,7 @@ function contentDisposition(kind: 'attachment' | 'inline', originalName: string)
   return `${kind}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(originalName)}`;
 }
 
-function pipeFile(res: Response, stream: ReadStream): void {
+function pipeFile(res: Response, stream: Readable): void {
   stream.on('error', (error) => {
     logger.error('File stream failed', { error: error.message });
     if (!res.headersSent) {

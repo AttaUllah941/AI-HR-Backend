@@ -2,10 +2,11 @@ import { createApp } from './app.js';
 import { connectDatabase, disconnectDatabase } from './config/database.js';
 import { env, isProduction } from './config/env.js';
 import { logger } from './config/logger.js';
-import { assertProductionSecrets } from './utils/security.js';
+import { assertProductionSecrets, assertStorageConfig } from './utils/security.js';
 
 async function bootstrap(): Promise<void> {
   assertProductionSecrets();
+  assertStorageConfig();
 
   try {
     await connectDatabase();
