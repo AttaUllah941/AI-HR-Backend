@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { validateQuery } from '../middleware/validate.middleware.js';
+import { paginationQuerySchema } from '../validators/pagination.validators.js';
 import { aiRouter } from '../modules/ai/ai.routes.js';
 import { attendanceRouter } from '../modules/attendance/attendance.routes.js';
 import { authRouter } from '../modules/auth/auth.routes.js';
@@ -20,21 +22,31 @@ import { securityRouter } from '../modules/security/security.routes.js';
 
 export const apiRouter = Router();
 
-apiRouter.use('/health', healthRouter);
-apiRouter.use('/auth', authRouter);
-apiRouter.use('/dashboard', dashboardRouter);
-apiRouter.use('/organization', organizationRouter);
-apiRouter.use('/employees', employeesRouter);
-apiRouter.use('/attendance', attendanceRouter);
-apiRouter.use('/leave', leaveRouter);
-apiRouter.use('/payroll', payrollRouter);
-apiRouter.use('/recruitment', recruitmentRouter);
-apiRouter.use('/performance', performanceRouter);
-apiRouter.use('/ai', aiRouter);
-apiRouter.use('/reports', reportsRouter);
-apiRouter.use('/notifications', notificationsRouter);
-apiRouter.use('/profile', profileRouter);
-apiRouter.use('/settings', settingsRouter);
-apiRouter.use('/files', filesRouter);
-apiRouter.use('/global', globalRouter);
-apiRouter.use('/security', securityRouter);
+// One shared rule for every list endpoint: page >= 1 and pageSize <= 100 (other params pass through).
+apiRouter.use(validateQuery(paginationQuerySchema.loose()));
+
+/** Every module router and where it is mounted (also used to generate the OpenAPI document). */
+export const API_MOUNTS: ReadonlyArray<readonly [string, Router]> = [
+  ['/health', healthRouter],
+  ['/auth', authRouter],
+  ['/dashboard', dashboardRouter],
+  ['/organization', organizationRouter],
+  ['/employees', employeesRouter],
+  ['/attendance', attendanceRouter],
+  ['/leave', leaveRouter],
+  ['/payroll', payrollRouter],
+  ['/recruitment', recruitmentRouter],
+  ['/performance', performanceRouter],
+  ['/ai', aiRouter],
+  ['/reports', reportsRouter],
+  ['/notifications', notificationsRouter],
+  ['/profile', profileRouter],
+  ['/settings', settingsRouter],
+  ['/files', filesRouter],
+  ['/global', globalRouter],
+  ['/security', securityRouter],
+];
+
+for (const [path, router] of API_MOUNTS) {
+  apiRouter.use(path, router);
+}

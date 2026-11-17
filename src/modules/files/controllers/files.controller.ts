@@ -1,8 +1,39 @@
 import type { Request, Response } from 'express';
 import { successResponse } from '../../../interfaces/api-response.js';
+import type { ReadStream } from 'node:fs';
+import { logger } from '../../../config/logger.js';
+import { errorResponse } from '../../../interfaces/api-response.js';
 import { ValidationError } from '../../../utils/app-error.js';
 import { FilesService } from '../services/files.service.js';
-import type { UpdateFileInput } from '../validators/files.validators.js';
+import type {
+  ListFilesQueryInput,
+  UpdateFileInput,
+  UploadFileFieldsInput,
+} from '../validators/files.validators.js';
+import { uploadFileFieldsSchema } from '../validators/files.validators.js';
+
+function contentDisposition(kind: 'attachment' | 'inline', originalName: string): string {
+  const ascii = originalName
+    .replace(/[^\x20-\x7E]/g, '_')
+    .replace(/["\\]/g, '_')
+    .slice(0, 180) || 'file';
+  return `${kind}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(originalName)}`;
+}
+
+function pipeFile(res: Response, stream: ReadStream): void {
+  stream.on('error', (error) => {
+    logger.error('File stream failed', { error: error.message });
+    if (!res.headersSent) {
+      res.removeHeader('Content-Disposition');
+      res.removeHeader('Content-Length');
+      res.status(500).type('application/json').json(errorResponse('Failed to read the file'));
+      return;
+    }
+    res.destroy(error);
+  });
+  res.on('close', () => stream.destroy());
+  stream.pipe(res);
+}
 
 export class FilesController {
   constructor(private readonly service = new FilesService()) {}
@@ -29,7 +60,7 @@ export class FilesController {
   list = async (req: Request, res: Response): Promise<void> => {
     const data = await this.service.list(
       this.actor(req),
-      req.query as Record<string, unknown>,
+      req.query as unknown as ListFilesQueryInput,
     );
     res.json(successResponse(data, 'Files'));
   };
@@ -45,18 +76,18 @@ export class FilesController {
       throw new ValidationError('File is required');
     }
 
-    const body = req.body as Record<string, string | undefined>;
+    const fields = uploadFileFieldsSchema.parse(req.body ?? {}) as UploadFileFieldsInput;
     const data = await this.service.upload(
       this.actor(req),
       {
         buffer: file.buffer,
         originalName: file.originalname,
         mimeType: file.mimetype,
-        category: body.category,
-        title: body.title,
-        description: body.description,
-        employeeId: body.employeeId,
-        candidateId: body.candidateId,
+        category: fields.category,
+        title: fields.title,
+        description: fields.description,
+        employeeId: fields.employeeId,
+        candidateId: fields.candidateId,
       },
       this.meta(req),
     );
@@ -88,12 +119,10 @@ export class FilesController {
       req.params.id as string,
     );
     res.setHeader('Content-Type', file.mimeType);
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="${encodeURIComponent(file.originalName)}"`,
-    );
+    res.setHeader('Content-Disposition', contentDisposition('attachment', file.originalName));
     res.setHeader('Content-Length', String(file.sizeBytes));
-    stream.pipe(res);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    pipeFile(res, stream);
   };
 
   preview = async (req: Request, res: Response): Promise<void> => {
@@ -102,12 +131,9 @@ export class FilesController {
       req.params.id as string,
     );
     res.setHeader('Content-Type', file.mimeType);
-    res.setHeader(
-      'Content-Disposition',
-      `inline; filename="${encodeURIComponent(file.originalName)}"`,
-    );
+    res.setHeader('Content-Disposition', contentDisposition('inline', file.originalName));
     res.setHeader('Content-Length', String(file.sizeBytes));
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    stream.pipe(res);
+    pipeFile(res, stream);
   };
 }

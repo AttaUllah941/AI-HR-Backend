@@ -1,6 +1,6 @@
 import type { ReportType } from '@prisma/client';
 import { ForbiddenError, ValidationError } from '../../../utils/app-error.js';
-import { toCsv, toSimplePdf } from '../utils/export-formatters.js';
+import { toCsv, toSimplePdf, toXlsx } from '../utils/export-formatters.js';
 import { ReportsRepository } from '../repositories/reports.repository.js';
 import type {
   ExportReportInput,
@@ -69,12 +69,12 @@ export class ReportsService {
     this.assertCanView(actor);
     const companyId = await this.requireCompanyId(actor.id);
     const year = new Date().getUTCFullYear();
-    const { from, to } = this.repo.parseRange();
+    const { from, to, toEnd } = this.repo.parseRange();
 
     const [kpis, attendanceRows, leaveRows, payrollStatus, jobs, apps, recentExports] =
       await Promise.all([
         this.repo.overviewCounts(companyId),
-        this.repo.attendanceByStatus(companyId, from, to),
+        this.repo.attendanceByStatus(companyId, from, toEnd),
         this.repo.leaveByStatus(companyId, year),
         this.repo.payrollRunStatusCounts(companyId, year),
         this.repo.jobStatusCounts(companyId),
@@ -101,12 +101,42 @@ export class ReportsService {
       },
       recentExports,
       modules: [
-        { key: 'ATTENDANCE', label: 'Attendance', path: 'attendance' },
-        { key: 'LEAVE', label: 'Leave', path: 'leave' },
-        { key: 'PAYROLL', label: 'Payroll', path: 'payroll' },
-        { key: 'RECRUITMENT', label: 'Recruitment', path: 'recruitment' },
-        { key: 'PERFORMANCE', label: 'Performance', path: 'performance' },
-        { key: 'EMPLOYEES', label: 'Employees', path: 'employees' },
+        {
+          key: 'ATTENDANCE',
+          label: 'Attendance Report',
+          path: 'attendance',
+          description: 'Daily · monthly · departmental breakdowns',
+        },
+        {
+          key: 'LEAVE',
+          label: 'Leave Report',
+          path: 'leave',
+          description: 'Balances, utilization, accrual forecasts',
+        },
+        {
+          key: 'PAYROLL',
+          label: 'Payroll Report',
+          path: 'payroll',
+          description: 'Compensation, tax, deductions, YTD totals',
+        },
+        {
+          key: 'RECRUITMENT',
+          label: 'Hiring Report',
+          path: 'recruitment',
+          description: 'Time-to-hire, source of hire, funnel drop-off',
+        },
+        {
+          key: 'PERFORMANCE',
+          label: 'Performance Report',
+          path: 'performance',
+          description: 'Goals, reviews, and promotion pipeline',
+        },
+        {
+          key: 'EMPLOYEES',
+          label: 'Employee Growth',
+          path: 'employees',
+          description: 'Hiring vs attrition, tenure curves',
+        },
       ],
     };
   }
@@ -114,12 +144,12 @@ export class ReportsService {
   async getAttendanceReport(actor: AuthActor, query: ReportQueryInput = {}) {
     this.assertCanView(actor);
     const companyId = await this.requireCompanyId(actor.id);
-    const { from, to } = this.repo.parseRange(query.dateFrom, query.dateTo);
+    const { from, to, toEnd } = this.repo.parseRange(query.dateFrom, query.dateTo);
     const departmentId = query.departmentId;
 
     const [byStatus, daily] = await Promise.all([
-      this.repo.attendanceByStatus(companyId, from, to, departmentId),
-      this.repo.attendanceDailyTrend(companyId, from, to, departmentId),
+      this.repo.attendanceByStatus(companyId, from, toEnd, departmentId),
+      this.repo.attendanceDailyTrend(companyId, from, toEnd, departmentId),
     ]);
 
     const statusMap = countsByKey(byStatus);
@@ -211,28 +241,33 @@ export class ReportsService {
 
   async getPayrollReport(actor: AuthActor, query: ReportQueryInput = {}) {
     this.assertCanView(actor);
+    if (!actor.permissions.includes('payroll:view')) {
+      throw new ForbiddenError('payroll:view permission required for payroll reports');
+    }
     const companyId = await this.requireCompanyId(actor.id);
     const year = query.year ?? new Date().getUTCFullYear();
+    const month = query.month;
 
     const [statusRows, monthRuns] = await Promise.all([
-      this.repo.payrollRunStatusCounts(companyId, year),
-      this.repo.payrollMonthRuns(companyId, year),
+      this.repo.payrollRunStatusCounts(companyId, year, month),
+      this.repo.payrollMonthRuns(companyId, year, month),
     ]);
 
     const byMonth = monthRuns.map((run) => ({
       month: run.month,
       status: run.status,
       title: run.title,
-      entryCount: run.entries.length,
-      grossPay: roundMoney(run.entries.reduce((s, e) => s + e.grossPay, 0)),
-      netPay: roundMoney(run.entries.reduce((s, e) => s + e.netPay, 0)),
-      totalTax: roundMoney(run.entries.reduce((s, e) => s + e.totalTax, 0)),
-      totalDeductions: roundMoney(run.entries.reduce((s, e) => s + e.totalDeductions, 0)),
+      entryCount: run.entryCount,
+      grossPay: roundMoney(run.grossPay),
+      netPay: roundMoney(run.netPay),
+      totalTax: roundMoney(run.totalTax),
+      totalDeductions: roundMoney(run.totalDeductions),
     }));
 
     const statusMap = countsByKey(statusRows);
     return {
       year,
+      month: month ?? null,
       byStatus: statusMap,
       byMonth,
       charts: {
@@ -420,7 +455,12 @@ export class ReportsService {
       jobOpeningId: input.jobOpeningId,
     };
 
-    const data = await this.getReportByType(actor, input.reportType, query);
+    // reports:export alone is sufficient to export; the per-report view check (reports:view) is
+    // satisfied by it, while module-specific checks (e.g. payroll:view) still apply.
+    const exportActor: AuthActor = actor.permissions.includes('reports:view')
+      ? actor
+      : { ...actor, permissions: [...actor.permissions, 'reports:view'] };
+    const data = await this.getReportByType(exportActor, input.reportType, query);
     const stamp = new Date().toISOString().slice(0, 10);
     const baseName = `zenith-${input.reportType.toLowerCase()}-${stamp}`;
 
@@ -460,6 +500,25 @@ export class ReportsService {
         fileName,
         contentType: 'text/csv; charset=utf-8',
         body: Buffer.from(csv, 'utf8'),
+      };
+    }
+
+    if (format === 'XLSX') {
+      const body = await toXlsx(input.reportType, headers, rows);
+      const fileName = `${baseName}.xlsx`;
+      await this.repo.createExportLog({
+        companyId,
+        userId: actor.id,
+        reportType,
+        format: 'XLSX',
+        filters: query as object,
+        rowCount: rows.length,
+        fileName,
+      });
+      return {
+        fileName,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        body,
       };
     }
 

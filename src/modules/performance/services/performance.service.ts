@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import {
   ConflictError,
   ForbiddenError,
@@ -21,6 +22,14 @@ import type {
   UpdateReviewInput,
   UpsertEmployeeKpiInput,
 } from '../validators/performance.validators.js';
+import {
+  feedbackType,
+  goalPriority,
+  goalStatus,
+  promotionStatus,
+  reviewCycleStatus,
+  reviewStatus,
+} from '../validators/performance.validators.js';
 
 type AuthActor = { id: string; permissions: string[] };
 
@@ -32,6 +41,17 @@ function countsByKey(
     out[row.status] = row._count._all;
   }
   return out;
+}
+
+function parseEnumParam<T extends string>(
+  schema: z.ZodType<T>,
+  value: string | undefined,
+  field: string,
+): T | undefined {
+  if (value === undefined || value === '') return undefined;
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new ValidationError(`Invalid ${field}`);
+  return parsed.data;
 }
 
 function clampProgress(value: number): number {
@@ -69,11 +89,16 @@ export class PerformanceService {
     throw error;
   }
 
+  /**
+   * "Manage company-wide" is the highest tier of the performance permission set
+   * (create/update/delete/approve/view): performance:approve or performance:delete.
+   * Holders of plain create/update are limited to their own employee record and,
+   * for managers, their direct reports.
+   */
   private canManageCompanyWide(actor: AuthActor): boolean {
     return (
-      actor.permissions.includes('performance:create') ||
-      actor.permissions.includes('performance:update') ||
-      actor.permissions.includes('performance:approve')
+      actor.permissions.includes('performance:approve') ||
+      actor.permissions.includes('performance:delete')
     );
   }
 
@@ -96,18 +121,86 @@ export class PerformanceService {
     return linked.id;
   }
 
+  private async isSelfOrDirectReport(
+    companyId: string,
+    selfId: string,
+    targetId: string,
+  ): Promise<boolean> {
+    return targetId === selfId || (await this.repo.isDirectReport(companyId, selfId, targetId));
+  }
+
+  /**
+   * Resolves the employee a create/update acts on. Company-wide managers may target anyone in
+   * the company; everyone else may target themselves or one of their direct reports.
+   */
+  private async resolveTargetEmployee(
+    actor: AuthActor,
+    companyId: string,
+    requestedId?: string | null,
+  ): Promise<string> {
+    if (this.canManageCompanyWide(actor)) {
+      return this.resolveEmployeeId(companyId, actor.id, requestedId);
+    }
+    const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
+    if (!requestedId || requestedId === selfId) return selfId;
+    const target = await this.repo.findEmployeeBasic(companyId, requestedId);
+    if (!target) throw new ValidationError('Invalid employee');
+    if (!(await this.repo.isDirectReport(companyId, selfId, target.id))) {
+      throw new ForbiddenError('You can only act on your own record or your direct reports');
+    }
+    return target.id;
+  }
+
+  private async assertEmployeeAccess(
+    actor: AuthActor,
+    companyId: string,
+    targetEmployeeId: string,
+    message: string,
+    extraAllowedIds: Array<string | null | undefined> = [],
+  ): Promise<void> {
+    if (this.canManageCompanyWide(actor)) return;
+    const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
+    if (extraAllowedIds.includes(selfId)) return;
+    if (!(await this.isSelfOrDirectReport(companyId, selfId, targetEmployeeId))) {
+      throw new ForbiddenError(message);
+    }
+  }
+
   private async scopedEmployeeId(
     actor: AuthActor,
     companyId: string,
     requestedId?: string | null,
   ): Promise<string | undefined> {
     if (!this.canManageCompanyWide(actor)) {
-      return this.resolveEmployeeId(companyId, actor.id, null);
+      const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
+      if (requestedId && requestedId !== selfId) {
+        const target = await this.repo.findEmployeeBasic(companyId, requestedId);
+        if (target && (await this.repo.isDirectReport(companyId, selfId, target.id))) {
+          return target.id;
+        }
+      }
+      return selfId;
     }
     if (requestedId) {
       return this.resolveEmployeeId(companyId, actor.id, requestedId);
     }
     return undefined;
+  }
+
+  /** Anonymous feedback hides its author from everyone except company-wide managers and the sender. */
+  private async redactFeedback<T extends { fromEmployeeId: string; isAnonymous: boolean }>(
+    actor: AuthActor,
+    companyId: string,
+    items: T[],
+  ): Promise<T[]> {
+    if (!items.some((item) => item.isAnonymous)) return items;
+    if (this.canManageCompanyWide(actor)) return items;
+    const self = await this.repo.findEmployeeByUserId(companyId, actor.id);
+    return items.map((item) =>
+      item.isAnonymous && item.fromEmployeeId !== self?.id
+        ? { ...item, fromEmployeeId: '', fromEmployee: null }
+        : item,
+    );
   }
 
   // —— Summary / Report ——
@@ -225,9 +318,9 @@ export class PerformanceService {
     const { items, total } = await this.repo.listGoals(companyId, {
       page,
       pageSize,
-      status: params.status as never,
+      status: parseEnumParam(goalStatus, params.status, 'status'),
       employeeId,
-      priority: params.priority as never,
+      priority: parseEnumParam(goalPriority, params.priority, 'priority'),
       search: params.search,
     });
     return { items, pagination: paginationMeta(page, pageSize, total) };
@@ -237,23 +330,18 @@ export class PerformanceService {
     const companyId = await this.requireCompanyId(actor.id);
     const goal = await this.repo.findGoal(companyId, id);
     if (!goal) throw new NotFoundError('Goal not found');
-    if (!this.canManageCompanyWide(actor)) {
-      const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
-      if (goal.employeeId !== selfId) {
-        throw new ForbiddenError('You can only view your own goals');
-      }
-    }
+    await this.assertEmployeeAccess(
+      actor,
+      companyId,
+      goal.employeeId,
+      'You can only view your own goals or those of your direct reports',
+    );
     return goal;
   }
 
   async createGoal(actor: AuthActor, input: CreateGoalInput) {
     const companyId = await this.requireCompanyId(actor.id);
-    let employeeId = input.employeeId ?? null;
-    if (!this.canManageCompanyWide(actor)) {
-      employeeId = await this.resolveEmployeeId(companyId, actor.id, null);
-    } else {
-      employeeId = await this.resolveEmployeeId(companyId, actor.id, employeeId);
-    }
+    const employeeId = await this.resolveTargetEmployee(actor, companyId, input.employeeId);
 
     const status = input.status ?? 'DRAFT';
     let progress = input.progress !== undefined ? clampProgress(input.progress) : 0;
@@ -277,12 +365,12 @@ export class PerformanceService {
     const companyId = await this.requireCompanyId(actor.id);
     const existing = await this.repo.findGoal(companyId, id);
     if (!existing) throw new NotFoundError('Goal not found');
-    if (!this.canManageCompanyWide(actor)) {
-      const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
-      if (existing.employeeId !== selfId) {
-        throw new ForbiddenError('You can only update your own goals');
-      }
-    }
+    await this.assertEmployeeAccess(
+      actor,
+      companyId,
+      existing.employeeId,
+      'You can only update your own goals or those of your direct reports',
+    );
 
     const status = input.status ?? existing.status;
     let progress =
@@ -303,12 +391,12 @@ export class PerformanceService {
     const companyId = await this.requireCompanyId(actor.id);
     const existing = await this.repo.findGoal(companyId, id);
     if (!existing) throw new NotFoundError('Goal not found');
-    if (!this.canManageCompanyWide(actor)) {
-      const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
-      if (existing.employeeId !== selfId) {
-        throw new ForbiddenError('You can only delete your own goals');
-      }
-    }
+    await this.assertEmployeeAccess(
+      actor,
+      companyId,
+      existing.employeeId,
+      'You can only delete your own goals or those of your direct reports',
+    );
     await this.repo.softDeleteGoal(id);
     await this.repo.createAuditLog({
       actorId: actor.id,
@@ -416,12 +504,7 @@ export class PerformanceService {
 
   async upsertEmployeeKpi(actor: AuthActor, input: UpsertEmployeeKpiInput) {
     const companyId = await this.requireCompanyId(actor.id);
-    let employeeId = input.employeeId;
-    if (!this.canManageCompanyWide(actor)) {
-      employeeId = await this.resolveEmployeeId(companyId, actor.id, null);
-    } else {
-      await this.resolveEmployeeId(companyId, actor.id, employeeId);
-    }
+    const employeeId = await this.resolveTargetEmployee(actor, companyId, input.employeeId);
 
     const kpi = await this.repo.findKpi(companyId, input.kpiId);
     if (!kpi) throw new NotFoundError('KPI not found');
@@ -454,7 +537,7 @@ export class PerformanceService {
     const { items, total } = await this.repo.listCycles(companyId, {
       page,
       pageSize,
-      status: params.status as never,
+      status: parseEnumParam(reviewCycleStatus, params.status, 'status'),
       year,
     });
     return { items, pagination: paginationMeta(page, pageSize, total) };
@@ -550,7 +633,7 @@ export class PerformanceService {
     const { items, total } = await this.repo.listReviews(companyId, {
       page,
       pageSize,
-      status: params.status as never,
+      status: parseEnumParam(reviewStatus, params.status, 'status'),
       employeeId,
       reviewerId: this.canManageCompanyWide(actor) ? params.reviewerId : undefined,
       cycleId: params.cycleId,
@@ -562,27 +645,39 @@ export class PerformanceService {
     const companyId = await this.requireCompanyId(actor.id);
     const review = await this.repo.findReview(companyId, id);
     if (!review) throw new NotFoundError('Review not found');
-    if (!this.canManageCompanyWide(actor)) {
-      const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
-      if (review.employeeId !== selfId && review.reviewerId !== selfId) {
-        throw new ForbiddenError('You can only view your own reviews');
-      }
-    }
-    return review;
+    await this.assertEmployeeAccess(
+      actor,
+      companyId,
+      review.employeeId,
+      'You can only view your own reviews',
+      [review.reviewerId],
+    );
+    return { ...review, feedback: await this.redactFeedback(actor, companyId, review.feedback) };
   }
 
   async createReview(actor: AuthActor, input: CreateReviewInput) {
     const companyId = await this.requireCompanyId(actor.id);
-    await this.resolveEmployeeId(companyId, actor.id, input.employeeId);
-    if (input.reviewerId) {
-      await this.resolveEmployeeId(companyId, actor.id, input.reviewerId);
+    const employeeId = await this.resolveTargetEmployee(actor, companyId, input.employeeId);
+    let reviewerId = input.reviewerId ?? null;
+    if (!this.canManageCompanyWide(actor)) {
+      const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
+      if (employeeId !== selfId) {
+        // A manager authoring a review of a direct report is the reviewer.
+        if (reviewerId && reviewerId !== selfId) {
+          throw new ForbiddenError('You can only assign yourself as reviewer');
+        }
+        reviewerId = selfId;
+      }
+    }
+    if (reviewerId) {
+      await this.resolveEmployeeId(companyId, actor.id, reviewerId);
     }
     if (input.cycleId) {
       const cycle = await this.repo.findCycle(companyId, input.cycleId);
       if (!cycle) throw new NotFoundError('Review cycle not found');
     }
 
-    const review = await this.repo.createReview(companyId, input);
+    const review = await this.repo.createReview(companyId, { ...input, employeeId, reviewerId });
     await this.repo.createAuditLog({
       actorId: actor.id,
       action: 'performance.review.create',
@@ -601,8 +696,23 @@ export class PerformanceService {
     }
     if (!this.canManageCompanyWide(actor)) {
       const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
-      if (existing.employeeId !== selfId && existing.reviewerId !== selfId) {
+      const isSubject = existing.employeeId === selfId;
+      const isReviewer = existing.reviewerId === selfId;
+      if (!isSubject && !isReviewer) {
         throw new ForbiddenError('You can only update your own reviews');
+      }
+      // The reviewed employee may only edit the self-assessment; the reviewer only the manager part.
+      if (isSubject && !isReviewer) {
+        input = {
+          selfRating: input.selfRating,
+          selfComments: input.selfComments,
+        };
+      } else if (isReviewer && !isSubject) {
+        input = {
+          managerRating: input.managerRating,
+          overallRating: input.overallRating,
+          managerComments: input.managerComments,
+        };
       }
     }
     if (input.reviewerId) {
@@ -653,11 +763,10 @@ export class PerformanceService {
     if (existing.status !== 'SUBMITTED') {
       throw new ValidationError('Only submitted reviews can be acknowledged');
     }
-    if (!this.canManageCompanyWide(actor)) {
-      const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
-      if (existing.employeeId !== selfId) {
-        throw new ForbiddenError('Only the reviewed employee can acknowledge this review');
-      }
+    // Only the reviewed employee can acknowledge, regardless of permission tier.
+    const ackSelfId = await this.resolveEmployeeId(companyId, actor.id, null);
+    if (existing.employeeId !== ackSelfId) {
+      throw new ForbiddenError('Only the reviewed employee can acknowledge this review');
     }
     const review = await this.repo.acknowledgeReview(id);
     await this.repo.createAuditLog({
@@ -704,13 +813,16 @@ export class PerformanceService {
     const { items, total } = await this.repo.listFeedback(companyId, {
       page,
       pageSize,
-      type: params.type as never,
+      type: parseEnumParam(feedbackType, params.type, 'type'),
       fromEmployeeId,
       toEmployeeId,
       reviewId: params.reviewId,
       involvingEmployeeId,
     });
-    return { items, pagination: paginationMeta(page, pageSize, total) };
+    return {
+      items: await this.redactFeedback(actor, companyId, items),
+      pagination: paginationMeta(page, pageSize, total),
+    };
   }
 
   async getFeedback(actor: AuthActor, id: string) {
@@ -723,19 +835,18 @@ export class PerformanceService {
         throw new ForbiddenError('You can only view feedback you sent or received');
       }
     }
-    return feedback;
+    const [redacted] = await this.redactFeedback(actor, companyId, [feedback]);
+    return redacted!;
   }
 
   async createFeedback(actor: AuthActor, input: CreateFeedbackInput) {
     const companyId = await this.requireCompanyId(actor.id);
     await this.resolveEmployeeId(companyId, actor.id, input.toEmployeeId);
 
-    let fromEmployeeId = input.fromEmployeeId ?? null;
-    if (!this.canManageCompanyWide(actor)) {
-      fromEmployeeId = await this.resolveEmployeeId(companyId, actor.id, null);
-    } else {
-      fromEmployeeId = await this.resolveEmployeeId(companyId, actor.id, fromEmployeeId);
-    }
+    // Plain create holders always author feedback as themselves.
+    const fromEmployeeId = this.canManageCompanyWide(actor)
+      ? await this.resolveEmployeeId(companyId, actor.id, input.fromEmployeeId)
+      : await this.resolveEmployeeId(companyId, actor.id, null);
 
     if (input.reviewId) {
       const review = await this.repo.findReview(companyId, input.reviewId);
@@ -780,7 +891,7 @@ export class PerformanceService {
     const { items, total } = await this.repo.listPromotions(companyId, {
       page,
       pageSize,
-      status: params.status as never,
+      status: parseEnumParam(promotionStatus, params.status, 'status'),
       employeeId,
     });
     return { items, pagination: paginationMeta(page, pageSize, total) };
@@ -790,23 +901,18 @@ export class PerformanceService {
     const companyId = await this.requireCompanyId(actor.id);
     const promotion = await this.repo.findPromotion(companyId, id);
     if (!promotion) throw new NotFoundError('Promotion request not found');
-    if (!this.canManageCompanyWide(actor)) {
-      const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
-      if (promotion.employeeId !== selfId) {
-        throw new ForbiddenError('You can only view your own promotion requests');
-      }
-    }
+    await this.assertEmployeeAccess(
+      actor,
+      companyId,
+      promotion.employeeId,
+      'You can only view your own promotion requests or those of your direct reports',
+    );
     return promotion;
   }
 
   async createPromotion(actor: AuthActor, input: CreatePromotionInput) {
     const companyId = await this.requireCompanyId(actor.id);
-    let employeeId = input.employeeId ?? null;
-    if (!this.canManageCompanyWide(actor)) {
-      employeeId = await this.resolveEmployeeId(companyId, actor.id, null);
-    } else {
-      employeeId = await this.resolveEmployeeId(companyId, actor.id, employeeId);
-    }
+    const employeeId = await this.resolveTargetEmployee(actor, companyId, input.employeeId);
     if (input.proposedDesignationId) {
       const designation = await this.repo.findDesignation(companyId, input.proposedDesignationId);
       if (!designation) throw new ValidationError('Invalid proposed designation');
@@ -830,10 +936,12 @@ export class PerformanceService {
       throw new ValidationError('Cannot update a finalized promotion request');
     }
     if (!this.canManageCompanyWide(actor)) {
-      const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
-      if (existing.employeeId !== selfId) {
-        throw new ForbiddenError('You can only update your own promotion requests');
-      }
+      await this.assertEmployeeAccess(
+        actor,
+        companyId,
+        existing.employeeId,
+        'You can only update promotion requests for yourself or your direct reports',
+      );
       if (existing.status !== 'DRAFT') {
         throw new ValidationError('Only draft promotion requests can be updated');
       }
@@ -866,12 +974,12 @@ export class PerformanceService {
     if (existing.status !== 'DRAFT') {
       throw new ValidationError('Only draft promotion requests can be submitted');
     }
-    if (!this.canManageCompanyWide(actor)) {
-      const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
-      if (existing.employeeId !== selfId) {
-        throw new ForbiddenError('You can only submit your own promotion requests');
-      }
-    }
+    await this.assertEmployeeAccess(
+      actor,
+      companyId,
+      existing.employeeId,
+      'You can only submit promotion requests for yourself or your direct reports',
+    );
     const promotion = await this.repo.submitPromotion(id);
     await this.repo.createAuditLog({
       actorId: actor.id,
@@ -890,6 +998,17 @@ export class PerformanceService {
       throw new ValidationError('Only pending promotion requests can be reviewed');
     }
 
+    // Maker-checker: the approver can be neither the promoted employee nor anyone who
+    // created, edited or submitted the request.
+    const reviewerEmployee = await this.repo.findEmployeeByUserId(companyId, actor.id);
+    if (reviewerEmployee?.id === existing.employeeId) {
+      throw new ForbiddenError('You cannot review your own promotion request');
+    }
+    const requesterIds = await this.repo.findPromotionActorIds(id);
+    if (requesterIds.includes(actor.id)) {
+      throw new ForbiddenError('You cannot review a promotion request you created or submitted');
+    }
+
     const status = input.approve ? 'APPROVED' : 'REJECTED';
 
     const promotion = await this.repo.runTransaction(async (tx) => {
@@ -903,6 +1022,9 @@ export class PerformanceService {
         },
         tx,
       );
+      if (!updated) {
+        throw new ConflictError('Promotion request is no longer pending');
+      }
       if (
         input.approve &&
         existing.proposedDesignationId
@@ -933,12 +1055,12 @@ export class PerformanceService {
     if (!['DRAFT', 'PENDING'].includes(existing.status)) {
       throw new ValidationError('Only draft or pending promotion requests can be withdrawn');
     }
-    if (!this.canManageCompanyWide(actor)) {
-      const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
-      if (existing.employeeId !== selfId) {
-        throw new ForbiddenError('You can only withdraw your own promotion requests');
-      }
-    }
+    await this.assertEmployeeAccess(
+      actor,
+      companyId,
+      existing.employeeId,
+      'You can only withdraw promotion requests for yourself or your direct reports',
+    );
     const promotion = await this.repo.withdrawPromotion(id);
     await this.repo.createAuditLog({
       actorId: actor.id,

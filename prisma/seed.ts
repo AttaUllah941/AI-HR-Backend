@@ -2,6 +2,11 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import 'dotenv/config';
 
+if (process.env.NODE_ENV === 'production' && process.env.ALLOW_SEED !== 'true') {
+  console.error('Refusing to seed: NODE_ENV=production. Set ALLOW_SEED=true to override.');
+  process.exit(1);
+}
+
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
 

@@ -244,6 +244,7 @@ model EmailVerificationToken {
 
 model AuditLog {
   id         String   @id @default(cuid())
+  companyId  String?
   actorId    String?
   action     String
   entityType String?
@@ -259,6 +260,7 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([entityId])
   @@index([createdAt])
+  @@index([companyId, createdAt])
   @@map("audit_logs")
 }
 
@@ -494,6 +496,7 @@ model Employee {
   @@index([designationId])
   @@index([managerId])
   @@index([deletedAt])
+  @@index([companyId, joinDate])
   @@map("employees")
 }
 
@@ -840,6 +843,7 @@ model LeaveRequest {
   leaveType LeaveType @relation(fields: [leaveTypeId], references: [id], onDelete: Restrict)
 
   @@index([companyId, status])
+  @@index([companyId, startDate])
   @@index([employeeId, startDate])
   @@index([leaveTypeId])
   @@index([deletedAt])
@@ -1004,6 +1008,7 @@ model PayrollEntry {
 
   @@unique([payrollRunId, employeeId])
   @@index([companyId])
+  @@index([payrollRunId])
   @@index([employeeId])
   @@map("payroll_entries")
 }
@@ -1579,6 +1584,7 @@ model AiGeneration {
   @@index([userId])
   @@index([relatedEntityType, relatedEntityId])
   @@index([deletedAt])
+  @@index([companyId, createdAt])
   @@map("ai_generations")
 }
 
@@ -1596,6 +1602,7 @@ enum ReportExportFormat {
   CSV
   PDF
   JSON
+  XLSX
 }
 
 model ReportExportLog {
@@ -1823,6 +1830,7 @@ model StoredFile {
   @@index([candidateId])
   @@index([uploadedById])
   @@index([deletedAt])
+  @@index([companyId, createdAt])
   @@map("stored_files")
 }
 
@@ -1900,4 +1908,22 @@ model LoginAttempt {
   @@index([email, createdAt])
   @@index([userId, createdAt])
   @@map("login_attempts")
+}
+
+/// Stored responses for requests sent with an Idempotency-Key header (see src/middleware/idempotency.middleware.ts).
+model IdempotencyKey {
+  id             String   @id @default(cuid())
+  userId         String
+  scope          String
+  key            String
+  requestHash    String
+  status         String   @default("IN_PROGRESS")
+  responseStatus Int?
+  responseBody   Json?
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  @@unique([userId, scope, key])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
 }

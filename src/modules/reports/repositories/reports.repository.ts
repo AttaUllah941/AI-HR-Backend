@@ -93,13 +93,13 @@ export class ReportsRepository {
 
   // —— Attendance ——
 
-  attendanceByStatus(companyId: string, from: Date, to: Date, departmentId?: string) {
+  attendanceByStatus(companyId: string, from: Date, toEnd: Date, departmentId?: string) {
     return prisma.attendanceRecord.groupBy({
       by: ['status'],
       where: {
         companyId,
         ...notDeleted,
-        date: { gte: from, lte: to },
+        date: { gte: from, lte: toEnd },
         ...(departmentId
           ? { employee: { departmentId, deletedAt: null } }
           : {}),
@@ -109,13 +109,13 @@ export class ReportsRepository {
     });
   }
 
-  attendanceDailyTrend(companyId: string, from: Date, to: Date, departmentId?: string) {
+  attendanceDailyTrend(companyId: string, from: Date, toEnd: Date, departmentId?: string) {
     return prisma.attendanceRecord.groupBy({
       by: ['date', 'status'],
       where: {
         companyId,
         ...notDeleted,
-        date: { gte: from, lte: to },
+        date: { gte: from, lte: toEnd },
         ...(departmentId
           ? { employee: { departmentId, deletedAt: null } }
           : {}),
@@ -172,33 +172,62 @@ export class ReportsRepository {
 
   // —— Payroll ——
 
-  payrollRunStatusCounts(companyId: string, year: number) {
+  payrollRunStatusCounts(companyId: string, year: number, month?: number) {
     return prisma.payrollRun.groupBy({
       by: ['status'],
-      where: { companyId, ...notDeleted, year },
+      where: {
+        companyId,
+        ...notDeleted,
+        year,
+        ...(month ? { month } : {}),
+      },
       _count: { _all: true },
     });
   }
 
-  payrollMonthRuns(companyId: string, year: number) {
-    return prisma.payrollRun.findMany({
-      where: { companyId, ...notDeleted, year },
-      orderBy: [{ month: 'asc' }, { createdAt: 'asc' }],
-      select: {
-        id: true,
-        month: true,
-        status: true,
-        title: true,
-        entries: {
-          select: {
+  payrollMonthRuns(companyId: string, year: number, month?: number) {
+    return prisma.payrollRun
+      .findMany({
+        where: {
+          companyId,
+          ...notDeleted,
+          year,
+          ...(month ? { month } : {}),
+        },
+        orderBy: [{ month: 'asc' }, { createdAt: 'asc' }],
+        select: {
+          id: true,
+          month: true,
+          status: true,
+          title: true,
+        },
+      })
+      .then(async (runs) => {
+        if (!runs.length) return [];
+        const sums = await prisma.payrollEntry.groupBy({
+          by: ['payrollRunId'],
+          where: { payrollRunId: { in: runs.map((r) => r.id) } },
+          _sum: {
             grossPay: true,
             netPay: true,
             totalTax: true,
             totalDeductions: true,
           },
-        },
-      },
-    });
+          _count: { _all: true },
+        });
+        const byRun = new Map(sums.map((row) => [row.payrollRunId, row]));
+        return runs.map((run) => {
+          const agg = byRun.get(run.id);
+          return {
+            ...run,
+            entryCount: agg?._count._all ?? 0,
+            grossPay: agg?._sum.grossPay ?? 0,
+            netPay: agg?._sum.netPay ?? 0,
+            totalTax: agg?._sum.totalTax ?? 0,
+            totalDeductions: agg?._sum.totalDeductions ?? 0,
+          };
+        });
+      });
   }
 
   // —— Recruitment ——
@@ -349,43 +378,41 @@ export class ReportsRepository {
     });
   }
 
-  headcountTrend(companyId: string, months = 6) {
+  /**
+   * Hires and active headcount at the end of each of the last `months` months, in ONE query
+   * (generate_series x employees with FILTER aggregates) instead of 2 counts per month.
+   * Month boundaries are UTC, matching how dates are stored.
+   */
+  async headcountTrend(companyId: string, months = 6) {
     const now = new Date();
-    const points: Array<{ year: number; month: number; from: Date; to: Date }> = [];
-    for (let i = months - 1; i >= 0; i -= 1) {
-      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
-      const year = d.getUTCFullYear();
-      const month = d.getUTCMonth() + 1;
-      const from = new Date(Date.UTC(year, month - 1, 1));
-      const to = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
-      points.push({ year, month, from, to });
-    }
-    return Promise.all(
-      points.map(async (p) => ({
-        year: p.year,
-        month: p.month,
-        hired: await prisma.employee.count({
-          where: {
-            companyId,
-            ...notDeleted,
-            joinDate: { gte: p.from, lte: p.to },
-          },
-        }),
-        active: await prisma.employee.count({
-          where: {
-            companyId,
-            ...notDeleted,
-            status: 'ACTIVE',
-            OR: [{ joinDate: null }, { joinDate: { lte: p.to } }],
-            AND: [
-              {
-                OR: [{ exitDate: null }, { exitDate: { gt: p.to } }],
-              },
-            ],
-          },
-        }),
-      })),
-    );
+    const first = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months - 1), 1));
+    const last = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const iso = (d: Date) => d.toISOString().slice(0, 10);
+
+    const rows = await prisma.$queryRaw<Array<{ month: Date; hired: number; active: number }>>`
+      SELECT
+        m.month AS "month",
+        (COUNT(*) FILTER (
+          WHERE e."joinDate" >= m.month AND e."joinDate" < m.month + interval '1 month'
+        ))::int AS "hired",
+        (COUNT(*) FILTER (
+          WHERE e.status = 'ACTIVE'
+            AND (e."joinDate" IS NULL OR e."joinDate" < m.month + interval '1 month')
+            AND (e."exitDate" IS NULL OR e."exitDate" >= m.month + interval '1 month')
+        ))::int AS "active"
+      FROM generate_series(${iso(first)}::timestamp, ${iso(last)}::timestamp, interval '1 month') AS m(month)
+      LEFT JOIN employees e
+        ON e."companyId" = ${companyId} AND e."deletedAt" IS NULL
+      GROUP BY m.month
+      ORDER BY m.month
+    `;
+
+    return rows.map((row) => ({
+      year: row.month.getUTCFullYear(),
+      month: row.month.getUTCMonth() + 1,
+      hired: row.hired,
+      active: row.active,
+    }));
   }
 
   // —— Export logs ——

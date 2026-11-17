@@ -1,7 +1,10 @@
 import type { Request, Response } from 'express';
 import { successResponse } from '../../../interfaces/api-response.js';
 import { SecurityService } from '../services/security.service.js';
-import type { UpdateSecurityPolicyInput } from '../validators/security.validators.js';
+import type {
+  ListLoginAttemptsQueryInput,
+  UpdateSecurityPolicyInput,
+} from '../validators/security.validators.js';
 
 export class SecurityController {
   constructor(private readonly service = new SecurityService()) {}
@@ -47,7 +50,7 @@ export class SecurityController {
   listLoginAttempts = async (req: Request, res: Response): Promise<void> => {
     const data = await this.service.listLoginAttempts(
       this.actor(req),
-      req.query as Record<string, unknown>,
+      req.query as unknown as ListLoginAttemptsQueryInput,
     );
     res.json(successResponse(data, 'Login attempts'));
   };

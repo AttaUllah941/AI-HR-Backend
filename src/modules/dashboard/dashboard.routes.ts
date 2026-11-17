@@ -11,5 +11,6 @@ export const dashboardRouter = Router();
 dashboardRouter.use(authMiddleware, requirePermissions('dashboard:view'));
 
 dashboardRouter.get('/summary', asyncHandler(controller.summary));
+dashboardRouter.get('/greeting', asyncHandler(controller.greeting));
 dashboardRouter.get('/activity', asyncHandler(controller.activity));
 dashboardRouter.get('/notifications', asyncHandler(controller.notifications));

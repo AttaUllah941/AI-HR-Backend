@@ -4,6 +4,7 @@ import { AuthRepository } from '../modules/auth/repositories/auth.repository.js'
 import { UnauthorizedError } from '../utils/app-error.js';
 import { verifyAccessToken } from '../utils/jwt.js';
 import { asyncHandler } from './async-handler.js';
+import { attachRouteMeta } from '../docs/route-meta.js';
 
 const authRepo = new AuthRepository();
 
@@ -24,9 +25,13 @@ declare global {
 }
 
 async function hydrateAuthUser(userId: string, sessionId?: string): Promise<AuthUser | null> {
-  const user = await authRepo.findById(userId);
+  // Tokens without a session id cannot be revoked, so they are never accepted.
+  if (!sessionId) return null;
+
+  const user = await authRepo.findByIdWithActiveSession(userId, sessionId);
   if (
     !user ||
+    user.sessions.length === 0 ||
     user.status === 'SUSPENDED' ||
     user.status === 'DELETED' ||
     user.status === 'PENDING_VERIFICATION' ||
@@ -45,9 +50,12 @@ async function hydrateAuthUser(userId: string, sessionId?: string): Promise<Auth
   };
 }
 
-export const authMiddleware = asyncHandler(async (req, res, next) => {
-  await runAuthMiddleware(req, res, next);
-});
+export const authMiddleware = attachRouteMeta(
+  asyncHandler(async (req, res, next) => {
+    await runAuthMiddleware(req, res, next);
+  }),
+  { auth: true },
+);
 
 async function runAuthMiddleware(
   req: Request,

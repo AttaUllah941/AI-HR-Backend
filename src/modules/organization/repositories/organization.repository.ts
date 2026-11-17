@@ -86,6 +86,12 @@ export class OrganizationRepository {
 
   createBranch(companyId: string, data: CreateBranchInput) {
     return prisma.$transaction(async (tx) => {
+      if (data.isHeadOffice) {
+        await tx.branch.updateMany({
+          where: { companyId, ...notDeleted, isHeadOffice: true },
+          data: { isHeadOffice: false },
+        });
+      }
       const branch = await tx.branch.create({
         data: {
           companyId,
@@ -118,8 +124,14 @@ export class OrganizationRepository {
     });
   }
 
-  updateBranch(id: string, data: UpdateBranchInput) {
+  updateBranch(companyId: string, id: string, data: UpdateBranchInput) {
     return prisma.$transaction(async (tx) => {
+      if (data.isHeadOffice) {
+        await tx.branch.updateMany({
+          where: { companyId, ...notDeleted, isHeadOffice: true, id: { not: id } },
+          data: { isHeadOffice: false },
+        });
+      }
       await tx.branch.update({
         where: { id },
         data: {
@@ -168,16 +180,12 @@ export class OrganizationRepository {
     });
   }
 
-  clearOtherHeadOffices(companyId: string, exceptBranchId?: string) {
-    return prisma.branch.updateMany({
-      where: {
-        companyId,
-        ...notDeleted,
-        isHeadOffice: true,
-        ...(exceptBranchId ? { id: { not: exceptBranchId } } : {}),
-      },
-      data: { isHeadOffice: false },
-    });
+  countEmployeesFor(
+    companyId: string,
+    field: 'branchId' | 'departmentId' | 'teamId' | 'designationId',
+    id: string,
+  ) {
+    return prisma.employee.count({ where: { companyId, [field]: id, ...notDeleted } });
   }
 
   listDepartments(companyId: string) {

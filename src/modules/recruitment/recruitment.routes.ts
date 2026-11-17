@@ -19,6 +19,7 @@ import {
   updateJobOpeningSchema,
   updateOfferSchema,
 } from './validators/recruitment.validators.js';
+import { idempotent } from '../../middleware/idempotency.middleware.js';
 
 const controller = new RecruitmentController();
 
@@ -213,6 +214,7 @@ recruitmentRouter.patch(
 recruitmentRouter.post(
   '/offers/:id/send',
   requirePermissions('recruitment:update'),
+  idempotent('recruitment.offer.send'),
   asyncHandler(controller.sendOffer),
 );
 recruitmentRouter.post(

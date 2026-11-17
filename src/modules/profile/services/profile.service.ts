@@ -1,8 +1,10 @@
 import { ForbiddenError, NotFoundError, UnauthorizedError, ValidationError } from '../../../utils/app-error.js';
 import { hashPassword, verifyPassword } from '../../../utils/password.js';
+import { DEFAULT_SECURITY_POLICY, validatePasswordAgainstPolicy } from '../../../utils/security.js';
 import { extractRolesAndPermissions } from '../../auth/dto/auth.dto.js';
 import { ProfileRepository } from '../repositories/profile.repository.js';
 import type {
+  ActivityQueryInput,
   ChangePasswordInput,
   UpdatePreferencesInput,
   UpdateProfileInput,
@@ -81,26 +83,24 @@ export class ProfileService {
     input: UpdateProfileInput,
     meta: { ip?: string; userAgent?: string },
   ) {
-    if (
-      input.firstName === undefined &&
-      input.lastName === undefined &&
-      input.phone === undefined &&
-      input.avatarUrl === undefined
-    ) {
-      throw new ValidationError('No profile fields to update');
-    }
-
     const avatarUrl =
-      input.avatarUrl === '' || input.avatarUrl === undefined
-        ? input.avatarUrl === ''
+      input.avatarUrl === undefined
+        ? undefined
+        : input.avatarUrl === null || input.avatarUrl === ''
           ? null
-          : undefined
-        : input.avatarUrl;
+          : input.avatarUrl;
+
+    const phone =
+      input.phone === undefined
+        ? undefined
+        : input.phone === null || input.phone.trim() === ''
+          ? null
+          : input.phone.trim();
 
     const updated = await this.repo.updateUser(actor.id, {
       ...(input.firstName !== undefined ? { firstName: input.firstName.trim() } : {}),
       ...(input.lastName !== undefined ? { lastName: input.lastName.trim() } : {}),
-      ...(input.phone !== undefined ? { phone: input.phone } : {}),
+      ...(phone !== undefined ? { phone } : {}),
       ...(avatarUrl !== undefined ? { avatarUrl } : {}),
     });
 
@@ -131,14 +131,31 @@ export class ProfileService {
       throw new ValidationError('New password must be different from the current password');
     }
 
+    const policy = user.companyId
+      ? await this.repo.getSecurityPolicy(user.companyId)
+      : DEFAULT_SECURITY_POLICY;
+    const passwordError = validatePasswordAgainstPolicy(input.newPassword, {
+      passwordMinLength: policy.passwordMinLength,
+      passwordRequireLetter: policy.passwordRequireLetter,
+      passwordRequireNumber: policy.passwordRequireNumber,
+      passwordRequireSpecial: policy.passwordRequireSpecial,
+    });
+    if (passwordError) {
+      throw new ValidationError(passwordError);
+    }
+
     const passwordHash = await hashPassword(input.newPassword);
     await this.repo.updateUser(actor.id, {
       passwordHash,
       passwordChangedAt: new Date(),
     });
 
-    // Revoke other sessions for security after password change
-    await this.repo.revokeOtherSessions(actor.id, actor.sessionId ?? null);
+    // Keep the current session; only revoke others when we know the session id.
+    let otherSessionsRevoked = 0;
+    if (actor.sessionId) {
+      const result = await this.repo.revokeOtherSessions(actor.id, actor.sessionId);
+      otherSessionsRevoked = result.count;
+    }
 
     await this.repo.createAuditLog({
       actorId: actor.id,
@@ -147,9 +164,10 @@ export class ProfileService {
       entityId: actor.id,
       ipAddress: meta.ip,
       userAgent: meta.userAgent,
+      metadata: { otherSessionsRevoked },
     });
 
-    return { changed: true, otherSessionsRevoked: true };
+    return { changed: true, otherSessionsRevoked };
   }
 
   async getPreferences(actor: AuthActor) {
@@ -158,9 +176,6 @@ export class ProfileService {
   }
 
   async updatePreferences(actor: AuthActor, input: UpdatePreferencesInput) {
-    if (Object.keys(input).length === 0) {
-      throw new ValidationError('No preference fields to update');
-    }
     return this.repo.updatePreferences(actor.id, input);
   }
 
@@ -174,7 +189,7 @@ export class ProfileService {
         return {
           id: row.id,
           status: expired && row.status === 'ACTIVE' ? 'EXPIRED' : row.status,
-          current: actor.sessionId === row.id,
+          current: Boolean(actor.sessionId) && actor.sessionId === row.id,
           ipAddress: row.ipAddress,
           userAgent: row.userAgent,
           deviceLabel: parseUserAgent(row.userAgent),
@@ -208,7 +223,12 @@ export class ProfileService {
   }
 
   async revokeOtherSessions(actor: AuthActor) {
-    const result = await this.repo.revokeOtherSessions(actor.id, actor.sessionId ?? null);
+    if (!actor.sessionId) {
+      throw new ValidationError(
+        'Current session could not be identified; re-authenticate and try again',
+      );
+    }
+    const result = await this.repo.revokeOtherSessions(actor.id, actor.sessionId);
     await this.repo.createAuditLog({
       actorId: actor.id,
       action: 'profile.session.revoke_others',
@@ -219,8 +239,8 @@ export class ProfileService {
     return { revoked: result.count };
   }
 
-  async listActivity(actor: AuthActor, params: Record<string, string | undefined>) {
-    const take = Math.min(100, Math.max(1, Number(params.limit) || 30));
+  async listActivity(actor: AuthActor, params: ActivityQueryInput = {}) {
+    const take = params.limit ?? 30;
     const rows = await this.repo.listActivity(actor.id, take);
     return {
       items: rows.map((row) => ({

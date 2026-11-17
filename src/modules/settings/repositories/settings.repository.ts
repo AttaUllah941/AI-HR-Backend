@@ -1,5 +1,19 @@
 import type { Prisma, UserStatus } from '@prisma/client';
 import { prisma } from '../../../config/database.js';
+import { decodeCursor, keysetOrderBy, keysetWhere, type KeysetField } from '../../../utils/cursor.js';
+
+export const AUDIT_KEYSET: KeysetField[] = [
+  { key: 'createdAt', dir: 'desc', isDate: true },
+  { key: 'id', dir: 'desc' },
+];
+
+const auditActorSelect = {
+  id: true,
+  email: true,
+  firstName: true,
+  lastName: true,
+  companyId: true,
+} as const;
 
 const notDeleted = { deletedAt: null };
 
@@ -127,7 +141,20 @@ export class SettingsRepository {
   findRolesByCodes(codes: string[]) {
     return prisma.role.findMany({
       where: { code: { in: codes } },
-      select: { id: true, code: true, name: true },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        rolePermissions: { select: { permission: { select: { code: true } } } },
+      },
+    });
+  }
+
+  /** Revokes every active session of a user (used on suspension, deletion and role changes). */
+  revokeUserSessions(userId: string) {
+    return prisma.session.updateMany({
+      where: { userId, status: 'ACTIVE' },
+      data: { status: 'REVOKED', revokedAt: new Date() },
     });
   }
 
@@ -230,6 +257,33 @@ export class SettingsRepository {
     });
   }
 
+  /**
+   * Removes a user that was just created and never used, freeing the unique email for a retry.
+   * Falls back to a soft delete (with a tombstoned email) if related rows block the hard delete.
+   */
+  async discardNewUser(userId: string, email: string) {
+    try {
+      await prisma.user.delete({ where: { id: userId } });
+    } catch {
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          status: 'DELETED',
+          deletedAt: new Date(),
+          email: `deleted+${userId}+${email}`,
+        },
+      });
+    }
+  }
+
+  getSecurityPolicy(companyId: string) {
+    return prisma.companySecurityPolicy.upsert({
+      where: { companyId },
+      create: { companyId },
+      update: {},
+    });
+  }
+
   listRoles() {
     return prisma.role.findMany({
       orderBy: { name: 'asc' },
@@ -299,18 +353,13 @@ export class SettingsRepository {
     });
   }
 
-  listAuditLogs(
+  private auditWhere(
     companyId: string,
-    query: {
-      page: number;
-      pageSize: number;
-      actorId?: string;
-      entityType?: string;
-      search?: string;
-    },
-  ) {
-    const where: Prisma.AuditLogWhereInput = {
-      actor: { companyId },
+    query: { actorId?: string; entityType?: string; search?: string },
+  ): Prisma.AuditLogWhereInput {
+    return {
+      // Indexed (companyId, createdAt); filled by a DB trigger from the actor for every new row.
+      companyId,
       ...(query.actorId ? { actorId: query.actorId } : {}),
       ...(query.entityType ? { entityType: query.entityType } : {}),
       ...(query.search
@@ -323,27 +372,54 @@ export class SettingsRepository {
           }
         : {}),
     };
+  }
 
+  /** Offset page (with total). Unchanged response shape for existing clients. */
+  listAuditLogs(
+    companyId: string,
+    query: {
+      page: number;
+      pageSize: number;
+      actorId?: string;
+      entityType?: string;
+      search?: string;
+    },
+  ) {
+    const where = this.auditWhere(companyId, query);
     return Promise.all([
       prisma.auditLog.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: (query.page - 1) * query.pageSize,
         take: query.pageSize,
-        include: {
-          actor: {
-            select: {
-              id: true,
-              email: true,
-              firstName: true,
-              lastName: true,
-              companyId: true,
-            },
-          },
-        },
+        include: { actor: { select: auditActorSelect } },
       }),
       prisma.auditLog.count({ where }),
     ]);
+  }
+
+  /** Keyset page (no COUNT): fetches pageSize + 1 rows after the cursor. */
+  listAuditLogsCursor(
+    companyId: string,
+    query: {
+      cursor?: string;
+      pageSize: number;
+      actorId?: string;
+      entityType?: string;
+      search?: string;
+    },
+  ) {
+    const base = this.auditWhere(companyId, query);
+    const after = decodeCursor(query.cursor, AUDIT_KEYSET);
+    const where: Prisma.AuditLogWhereInput = after
+      ? { AND: [base, keysetWhere(AUDIT_KEYSET, after) as Prisma.AuditLogWhereInput] }
+      : base;
+    return prisma.auditLog.findMany({
+      where,
+      orderBy: keysetOrderBy(AUDIT_KEYSET) as Prisma.AuditLogOrderByWithRelationInput[],
+      take: query.pageSize + 1,
+      include: { actor: { select: auditActorSelect } },
+    });
   }
 
   createAuditLog(input: {

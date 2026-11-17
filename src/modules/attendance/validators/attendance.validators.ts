@@ -54,7 +54,7 @@ export const createHolidaySchema = z.object({
 export const updateHolidaySchema = createHolidaySchema.partial();
 
 export const createAttendanceSchema = z.object({
-  employeeId: z.string().min(1),
+  employeeId: z.string().min(1).optional(),
   date: requiredDate,
   shiftId: optionalString(50),
   checkInAt: optionalDate,
@@ -79,7 +79,7 @@ export const clockActionSchema = z.object({
 });
 
 export const createOvertimeSchema = z.object({
-  employeeId: z.string().min(1),
+  employeeId: z.string().min(1).optional(),
   attendanceId: optionalString(50),
   date: requiredDate,
   minutes: z.number().int().min(1).max(24 * 60),

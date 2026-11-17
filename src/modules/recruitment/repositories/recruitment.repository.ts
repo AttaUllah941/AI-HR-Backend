@@ -301,6 +301,13 @@ export class RecruitmentRepository {
     return { items, total };
   }
 
+  findStoredFile(companyId: string, id: string) {
+    return prisma.storedFile.findFirst({
+      where: { id, companyId, deletedAt: null },
+      select: { id: true },
+    });
+  }
+
   findCandidate(companyId: string, id: string) {
     return prisma.candidate.findFirst({
       where: { id, companyId, ...notDeleted },
@@ -432,7 +439,7 @@ export class RecruitmentRepository {
         jobOpeningId: data.jobOpeningId,
         candidateId: data.candidateId,
         coverLetter: data.coverLetter ?? null,
-        status: data.status ?? 'APPLIED',
+        status: 'APPLIED',
       },
       include: applicationInclude,
     });
@@ -462,7 +469,7 @@ export class RecruitmentRepository {
     });
   }
 
-  listPipelineApplications(companyId: string, jobOpeningId?: string) {
+  listPipelineApplications(companyId: string, jobOpeningId?: string, take = 200) {
     return prisma.jobApplication.findMany({
       where: {
         companyId,
@@ -472,6 +479,7 @@ export class RecruitmentRepository {
       },
       include: applicationInclude,
       orderBy: [{ status: 'asc' }, { stageChangedAt: 'desc' }],
+      take,
     });
   }
 
@@ -615,22 +623,31 @@ export class RecruitmentRepository {
         ...(data.startDate !== undefined ? { startDate: data.startDate } : {}),
         ...(data.expiresAt !== undefined ? { expiresAt: data.expiresAt } : {}),
         ...(data.notes !== undefined ? { notes: data.notes } : {}),
-        ...(data.status !== undefined ? { status: data.status } : {}),
       },
       include: offerInclude,
     });
   }
 
-  sendOffer(id: string) {
-    return prisma.jobOffer.update({
-      where: { id },
+  /** Atomically DRAFT -> SENT. Returns 0 if another request already sent it (or it changed state). */
+  async claimOfferSend(id: string, companyId: string, db: DbClient = prisma): Promise<number> {
+    const result = await db.jobOffer.updateMany({
+      where: { id, companyId, status: 'DRAFT' },
       data: { status: 'SENT', sentAt: new Date() },
-      include: offerInclude,
     });
+    return result.count;
   }
 
-  respondOffer(id: string, status: 'ACCEPTED' | 'DECLINED', notes?: string | null) {
-    return prisma.jobOffer.update({
+  findOfferById(id: string, db: DbClient = prisma) {
+    return db.jobOffer.findUnique({ where: { id }, include: offerInclude });
+  }
+
+  respondOffer(
+    id: string,
+    status: 'ACCEPTED' | 'DECLINED',
+    notes?: string | null,
+    db: DbClient = prisma,
+  ) {
+    return db.jobOffer.update({
       where: { id },
       data: {
         status,
@@ -688,14 +705,17 @@ export class RecruitmentRepository {
     });
   }
 
-  createAuditLog(input: {
-    actorId: string;
-    action: string;
-    entityType: string;
-    entityId: string;
-    metadata?: Prisma.InputJsonValue;
-  }) {
-    return prisma.auditLog.create({
+  createAuditLog(
+    input: {
+      actorId: string;
+      action: string;
+      entityType: string;
+      entityId: string;
+      metadata?: Prisma.InputJsonValue;
+    },
+    db: DbClient = prisma,
+  ) {
+    return db.auditLog.create({
       data: {
         actorId: input.actorId,
         action: input.action,

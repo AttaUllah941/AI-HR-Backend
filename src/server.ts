@@ -1,6 +1,6 @@
 import { createApp } from './app.js';
 import { connectDatabase, disconnectDatabase } from './config/database.js';
-import { env } from './config/env.js';
+import { env, isProduction } from './config/env.js';
 import { logger } from './config/logger.js';
 import { assertProductionSecrets } from './utils/security.js';
 
@@ -10,11 +10,16 @@ async function bootstrap(): Promise<void> {
   try {
     await connectDatabase();
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isProduction) {
+      logger.error('Database connection failed — refusing to start in production', {
+        error: message,
+      });
+      process.exit(1);
+    }
     logger.warn(
       'Database connection deferred — run `npm run db:up` and keep PostgreSQL running on localhost:5432',
-      {
-        error: error instanceof Error ? error.message : String(error),
-      },
+      { error: message },
     );
   }
 
@@ -26,6 +31,11 @@ async function bootstrap(): Promise<void> {
       prefix: env.API_PREFIX,
     });
   });
+
+  // Behind nginx / a load balancer the proxy's idle timeout is usually 60 s; keep ours longer
+  // so a reused connection is never closed by us mid-request (avoids sporadic 502s).
+  server.keepAliveTimeout = 65_000;
+  server.headersTimeout = 66_000;
 
   const shutdown = async (signal: string) => {
     logger.info(`${signal} received — shutting down`);

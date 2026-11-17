@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { Pool } from 'pg';
 import { env } from './env.js';
 import { logger } from './logger.js';
+import { dbQueryDuration, dbSlowQueries, registerPoolMetrics } from './metrics.js';
 
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;
@@ -13,10 +14,12 @@ const globalForPrisma = globalThis as unknown as {
 function createPool(): Pool {
   const pool = new Pool({
     connectionString: env.DATABASE_URL,
-    max: 10,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5_000,
+    max: env.DB_POOL_MAX,
+    idleTimeoutMillis: env.DB_POOL_IDLE_TIMEOUT_MS,
+    connectionTimeoutMillis: env.DB_POOL_CONNECTION_TIMEOUT_MS,
   });
+
+  registerPoolMetrics(pool);
 
   pool.on('error', (err) => {
     logger.error('Unexpected PostgreSQL pool error', {
@@ -29,7 +32,28 @@ function createPool(): Pool {
 
 function createPrismaClient(pool: Pool): PrismaClient {
   const adapter = new PrismaPg(pool);
-  return new PrismaClient({ adapter });
+  const client = new PrismaClient({
+    adapter,
+    log: [{ emit: 'event', level: 'query' }],
+  });
+
+  // Slow-query log + latency histogram. Only the SQL text is logged, never the bound parameters
+  // (they can contain personal data).
+  (client as unknown as {
+    $on: (event: 'query', cb: (e: { query: string; duration: number }) => void) => void;
+  }).$on('query', (event) => {
+    dbQueryDuration.observe(event.duration / 1000);
+    if (event.duration > env.DB_SLOW_QUERY_MS) {
+      dbSlowQueries.inc();
+      logger.warn('Slow query', {
+        durationMs: event.duration,
+        thresholdMs: env.DB_SLOW_QUERY_MS,
+        query: event.query.length > 600 ? `${event.query.slice(0, 600)}...` : event.query,
+      });
+    }
+  });
+
+  return client;
 }
 
 function isClientCurrent(client: PrismaClient | undefined): client is PrismaClient {

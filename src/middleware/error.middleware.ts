@@ -77,7 +77,16 @@ export function errorHandler(
   );
 }
 
-const DATABASE_UNAVAILABLE_CODES = new Set(['P1000', 'P1001', 'P1002', 'P1003', 'P1017', 'P2024']);
+const DATABASE_UNAVAILABLE_CODES = new Set([
+  'P1000',
+  'P1001',
+  'P1002',
+  'P1003',
+  'P1008',
+  'P1017',
+  'P2024',
+  'ECONNREFUSED',
+]);
 
 function isDatabaseUnavailableError(err: unknown): boolean {
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
@@ -87,8 +96,15 @@ function isDatabaseUnavailableError(err: unknown): boolean {
   }
 
   const message = err instanceof Error ? err.message : String(err);
-  return /can't reach database|econnrefused|connection terminated|connection timeout|server closed the connection|not yet connected|database system is starting/i.test(
-    message,
+  const cause =
+    err instanceof Error && err.cause instanceof Error
+      ? err.cause.message
+      : err instanceof Error && typeof err.cause === 'string'
+        ? err.cause
+        : '';
+  const haystack = `${message}\n${cause}`;
+  return /can't reach database|econnrefused|connection refused|connection terminated|connection timeout|server closed the connection|not yet connected|database system is starting|connect ECONNREFUSED/i.test(
+    haystack,
   );
 }
 

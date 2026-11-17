@@ -21,3 +21,5 @@ generated/
 skills-lock.json
 
 stale_token.txt
+
+prisma/seed-qa.fixtures.json

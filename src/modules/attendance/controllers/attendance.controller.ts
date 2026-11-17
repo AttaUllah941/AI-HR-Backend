@@ -133,10 +133,7 @@ export class AttendanceController {
   };
 
   listOvertime = async (req: Request, res: Response): Promise<void> => {
-    const data = await this.service.listOvertime(
-      this.actor(req),
-      req.query.status as string | undefined,
-    );
+    const data = await this.service.listOvertime(this.actor(req), req.query as Record<string, unknown>);
     res.json(successResponse(data, 'Overtime requests'));
   };
 

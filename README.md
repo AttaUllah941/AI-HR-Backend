@@ -265,7 +265,7 @@ Permissions: `reports:view` (read), `reports:export` (download). HR Manager gets
 | GET | `/api/v1/reports/summary` | Cross-module KPIs, charts, recent exports |
 | GET | `/api/v1/reports/attendance` | Attendance report (`dateFrom`, `dateTo`, `departmentId`) |
 | GET | `/api/v1/reports/leave` | Leave report (`year`, `employeeId`) |
-| GET | `/api/v1/reports/payroll` | Payroll report (`year`) |
+| GET | `/api/v1/reports/payroll` | Payroll report (`year`, `month`) |
 | GET | `/api/v1/reports/recruitment` | Recruitment funnel (`jobOpeningId`) |
 | GET | `/api/v1/reports/performance` | Performance report (`year`, `employeeId`) |
 | GET | `/api/v1/reports/employees` | Headcount / workforce report (`departmentId`) |
@@ -286,8 +286,8 @@ Email: `EMAIL_PROVIDER=console` (default) or `smtp` with `EMAIL_SMTP_URL` relay.
 |--------|------|-------------|
 | GET | `/api/v1/notifications/status` | Email/push provider names + channel list |
 | GET | `/api/v1/notifications/summary` | Unread counts by category + recent |
-| GET | `/api/v1/notifications/feed` | Header bell feed (`?limit=`) |
-| GET | `/api/v1/notifications` | Paginated history (`category`, `channel`, `status`, `unreadOnly`) |
+| GET | `/api/v1/notifications/feed` | Header bell feed (`?limit=` 1–20) |
+| GET | `/api/v1/notifications` | Paginated history (`category`, `channel`, `status`, `unreadOnly`, page) |
 | GET | `/api/v1/notifications/:id` | Detail |
 | POST | `/api/v1/notifications/:id/read` | Mark one read |
 | POST | `/api/v1/notifications/read-all` | Mark all in-app unread as read |
@@ -312,7 +312,7 @@ Self-service profile for the signed-in user (auth required; no special permissio
 | GET | `/api/v1/profile/sessions` | Session history (marks current when `sid` in access token) |
 | DELETE | `/api/v1/profile/sessions/:id` | Revoke a session (not the current one) |
 | POST | `/api/v1/profile/sessions/revoke-others` | Revoke all other active sessions |
-| GET | `/api/v1/profile/activity` | Recent audit activity for the user |
+| GET | `/api/v1/profile/activity` | Recent audit activity (`?limit=` 1–100) |
 
 MFA enable/disable remains at `/api/v1/auth/mfa/*` and UI `/mfa-setup`.
 
@@ -329,12 +329,12 @@ Company administration hub under `/api/v1/settings` (auth + RBAC).
 | PATCH | `/api/v1/settings/config/storage` | `settings:update` | File storage provider |
 | PATCH | `/api/v1/settings/config/integrations` | `settings:update` | Integration metadata |
 | PATCH | `/api/v1/settings/config/system` | `settings:update` | System toggles |
-| GET/POST | `/api/v1/settings/users` | `users:view` / `users:create` | List / invite users |
+| GET/POST | `/api/v1/settings/users` | `users:view` / `users:create` | List (`search`, `status`, page) / invite users |
 | PATCH/DELETE | `/api/v1/settings/users/:id` | `users:update` / `users:delete` | Update / soft-delete |
 | GET | `/api/v1/settings/roles` | `roles:view` | Roles + permission matrix |
 | GET | `/api/v1/settings/permissions` | `roles:view` | All permission codes |
 | PUT | `/api/v1/settings/roles/:id/permissions` | `roles:manage` | Replace role grants (not Super Admin) |
-| GET | `/api/v1/settings/audit-logs` | `settings:view` | Company-scoped audit trail |
+| GET | `/api/v1/settings/audit-logs` | `settings:view` | Company-scoped audit trail (`search`, `entityType`, `actorId`, page) |
 
 Frontend: `/settings` shell (overview, company, users, roles, email, storage, system, audit).
 
@@ -345,7 +345,7 @@ Secure file registry under `/api/v1/files` (auth + RBAC). Local disk storage (`F
 | Method | Path | Permission | Description |
 |--------|------|------------|-------------|
 | GET | `/api/v1/files/summary` | `files:view` | Counts, bytes, storage config |
-| GET | `/api/v1/files` | `files:view` | List/filter (`category`, `search`, `employeeId`, `candidateId`) |
+| GET | `/api/v1/files` | `files:view` | List/filter (Zod: `category`, `search`, `employeeId`, `candidateId`, `page`, `pageSize`) |
 | GET | `/api/v1/files/:id` | `files:view` | File metadata |
 | GET | `/api/v1/files/:id/download` | `files:view` | Authenticated download stream |
 | GET | `/api/v1/files/:id/preview` | `files:view` | Inline preview (PDF/images/text) |
@@ -353,11 +353,11 @@ Secure file registry under `/api/v1/files` (auth + RBAC). Local disk storage (`F
 | PATCH | `/api/v1/files/:id` | `files:update` | Update title/links/category |
 | DELETE | `/api/v1/files/:id` | `files:delete` | Soft-delete + remove from disk |
 
-Upload categories: `GENERAL`, `EMPLOYEE_DOCUMENT` (requires `employeeId`, also creates `EmployeeDocument`), `RESUME` (requires `candidateId`, updates candidate resume fields), `AVATAR` (updates user avatar URL), `POLICY`, `OTHER`.
+Upload categories: `GENERAL`, `EMPLOYEE_DOCUMENT` (requires `employeeId`, also creates `EmployeeDocument`), `RESUME` (requires `candidateId`, updates candidate resume fields), `AVATAR` (updates user avatar URL), `POLICY`, `OTHER`. Multipart metadata is Zod-validated after multer; downloads use RFC 5987 `Content-Disposition`.
 
 View-only users see their own uploads / linked employee docs; staff with broader HR permissions see the company library.
 
-Frontend: `/files` shell (overview, library, documents, resumes).
+Frontend: `/files` shell titled Documents (overview, library, documents, resumes).
 
 ## Phase 17 global features
 
@@ -365,7 +365,7 @@ Cross-app search, bookmarks, recent searches, and keyboard shortcuts under `/api
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/global/search` | Multi-entity search (`q`, `types`, `page`, `pageSize`, `sortBy`, `sortDir`, filters) |
+| GET | `/api/v1/global/search` | Multi-entity search (Zod: `q`, `types`, `page`, `pageSize`, `sortBy`, `sortDir`, filters, `saveRecent`) |
 | GET | `/api/v1/global/shortcuts` | Keyboard shortcut catalog |
 | GET | `/api/v1/global/recent-searches` | Recent queries for the signed-in user |
 | DELETE | `/api/v1/global/recent-searches` | Clear all recent searches |
@@ -373,9 +373,9 @@ Cross-app search, bookmarks, recent searches, and keyboard shortcuts under `/api
 | GET/POST | `/api/v1/global/bookmarks` | List / save bookmarks |
 | PATCH/DELETE | `/api/v1/global/bookmarks/:id` | Update / remove bookmark |
 
-Searchable types: `employees`, `departments`, `branches`, `candidates`, `jobs`, `files`, `users`.
+Searchable types: `employees`, `departments`, `branches`, `candidates`, `jobs`, `files`, `users` (permission-scoped). File hits respect the same visibility rules as the files module. Command palette should call search with `saveRecent=false` so live typing does not pollute history. Bookmark routes must be internal paths (`/…`).
 
-Frontend: `/search` page + top-bar command palette (`Ctrl/⌘ K`) and shortcuts help (`Ctrl/⌘ /`). Chord shortcuts: `G` then `D/E/F/P/S`.
+Frontend: `/search` page + top-bar command palette (`Ctrl/⌘ K`) and shortcuts help (`Ctrl/⌘ /`). Chord shortcuts: `G` then `D/E/F/P/S` (S → search).
 
 ## Phase 18 security hardening
 
@@ -389,11 +389,13 @@ Runtime hardening also includes Helmet (CSP in production), CORS allowlist, auth
 | GET | `/api/v1/security/review` | `settings:view` | Pass/warn/fail hardening checklist |
 | GET | `/api/v1/security/policy` | `settings:view` | Current company security policy |
 | PATCH | `/api/v1/security/policy` | `settings:update` | Update lockout, password, MFA, allowlist |
-| GET | `/api/v1/security/login-attempts` | `settings:view` | Paginated login attempt log |
+| GET | `/api/v1/security/login-attempts` | `settings:view` | Paginated login attempt log (Zod: `email`, `success`, `page`, `pageSize`) |
 
-Policy fields: `maxFailedLogins`, `lockoutMinutes`, password complexity rules, `requireMfaForPrivileged`, `allowSelfRegistration`, `refreshRateLimitPerWindow`, `ipAllowlist` (empty = allow all).
+Policy fields: `maxFailedLogins`, `lockoutMinutes`, password complexity rules, `requireMfaForPrivileged` (sign-in warning), `allowSelfRegistration`, `refreshRateLimitPerWindow` (stored; runtime refresh limiter uses platform default), `ipAllowlist` (empty = allow all; IP/CIDR validated).
 
-Frontend: Settings → **Security** (`/settings/security`) — review checklist, policy form, recent login attempts.
+Password resets and profile password changes enforce the company password policy. Refresh tokens use a dedicated rate limiter separate from login/register.
+
+Frontend: Settings → **Security** (`/settings/security`) — review checklist, policy form, filtered login attempts.
 
 ## Phase 19 testing & optimization
 
@@ -402,8 +404,11 @@ Test harness expansion, shared pagination, DB indexes for hot paths, shell bundl
 ### Backend
 - Unit tests (`node:test` + `tsx`): pagination, security helpers, auth validators, error middleware, existing IP utilities
 - API smoke test: welcome `/`, `/api/v1/health`, unknown route → `ROUTE_NOT_FOUND`
-- Shared `src/utils/pagination.ts` used across list services (notifications, files, settings, payroll, recruitment, performance, AI, global, security)
-- Migration `20260907110000_phase19_indexes`: composite indexes for sessions, users, employees, login attempts, search sorts, etc. (apply with `npx prisma migrate deploy` on a healthy DB; local embedded Postgres may need rebuild if previously corrupted)
+- Shared `src/utils/pagination.ts` used across list services (notifications, files, settings, payroll, recruitment, performance, AI, global, security, leave balances, overtime, employees)
+- Lightweight `GET /api/v1/dashboard/greeting` for shell header (avoids full summary payload)
+- Payroll month aggregates via `groupBy`/`_sum` (no nested entry hydration)
+- Soft caps: recruitment pipeline (200), AI chat history (last 50 messages)
+- Migrations: `20260907110000_phase19_indexes` + `20260910120000_phase19_perf_followup` (`leave_requests(companyId,startDate)`, `payroll_entries(payrollRunId)`)
 - Production Angular budgets adjusted after shell review (initial warn 650kB; component styles warn 8kB)
 
 ```bash
@@ -427,27 +432,29 @@ Docker/Compose stack, production env templates, CI workflows, health probes, bac
 
 | Asset | Purpose |
 |-------|---------|
-| `Dockerfile` | Multi-stage API image (non-root, migrate on start, healthcheck) |
+| `Dockerfile` | Multi-stage API image (non-root via entrypoint `su-exec`, migrate on start, healthcheck) |
 | `docker-compose.yml` | postgres + api + web (+ optional `db-backup` profile) |
-| `docker-compose.prod.yml` | Production overlays (no public Postgres port) |
-| `.env.production.example` | Production secrets template |
-| `.github/workflows/ci.yml` | Lint, test, build on push/PR |
-| `scripts/backup-db.sh` / `.ps1` | Logical DB dumps |
-| `GET /api/v1/health/live\|ready\|metrics` | Probes + process metrics |
-| Frontend `nginx.conf` | SPA, `/api` proxy, security/cache headers |
+| `docker-compose.prod.yml` | Production overlays (no public Postgres **or** API ports) |
+| `.env.production.example` | Production secrets template (placeholders fail weak-secret checks) |
+| `.github/workflows/ci.yml` | Typecheck, test, build on push/PR |
+| `scripts/backup-db.sh` / `.ps1` | Logical DB dumps (`.sql.gz`) |
+| `GET /api/v1/health/live\|ready\|metrics` | Probes + process metrics (health excluded from rate limit) |
+| Frontend `nginx.conf` | SPA, `/api` proxy, upload size + security headers |
 
 ```bash
 docker compose up -d --build
 docker compose --profile backup run --rm db-backup
 ```
 
-### Seeded demo user
+### Seeded demo user (local only)
 
-After `npm run prisma:seed`:
+After `npm run prisma:seed` on a **non-production** database:
 
 - Super Admin: `superadmin@zenith.local` / `Password123!`
 - Admin (HR Admin): `admin@zenith.local` / `Password123!`
 - Employee: `employee@zenith.local` / `Password123!`
+
+Do not use these credentials on a real production tenant.
 
 ## Docker
 

@@ -42,10 +42,19 @@ export class ProfileRepository {
       select: {
         id: true,
         email: true,
+        companyId: true,
         passwordHash: true,
         passwordChangedAt: true,
         mfaEnabled: true,
       },
+    });
+  }
+
+  getSecurityPolicy(companyId: string) {
+    return prisma.companySecurityPolicy.upsert({
+      where: { companyId },
+      create: { companyId },
+      update: {},
     });
   }
 

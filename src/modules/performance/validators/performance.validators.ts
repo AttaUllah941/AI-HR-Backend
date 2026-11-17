@@ -7,10 +7,10 @@ const optionalString = (max: number) =>
   );
 
 const requiredDate = z.coerce.date();
-const goalStatus = z.enum(['DRAFT', 'ACTIVE', 'COMPLETED', 'CANCELLED']);
-const goalPriority = z.enum(['LOW', 'MEDIUM', 'HIGH']);
-const reviewCycleStatus = z.enum(['DRAFT', 'ACTIVE', 'CLOSED']);
-const reviewStatus = z.enum([
+export const goalStatus = z.enum(['DRAFT', 'ACTIVE', 'COMPLETED', 'CANCELLED']);
+export const goalPriority = z.enum(['LOW', 'MEDIUM', 'HIGH']);
+export const reviewCycleStatus = z.enum(['DRAFT', 'ACTIVE', 'CLOSED']);
+export const reviewStatus = z.enum([
   'DRAFT',
   'IN_PROGRESS',
   'SUBMITTED',
@@ -18,8 +18,8 @@ const reviewStatus = z.enum([
   'COMPLETED',
   'CANCELLED',
 ]);
-const feedbackType = z.enum(['PEER', 'MANAGER', 'SELF', 'UPWARD', 'GENERAL']);
-const promotionStatus = z.enum(['DRAFT', 'PENDING', 'APPROVED', 'REJECTED', 'WITHDRAWN']);
+export const feedbackType = z.enum(['PEER', 'MANAGER', 'SELF', 'UPWARD', 'GENERAL']);
+export const promotionStatus = z.enum(['DRAFT', 'PENDING', 'APPROVED', 'REJECTED', 'WITHDRAWN']);
 const rating = z.number().min(0).max(5);
 
 export const createGoalSchema = z.object({
@@ -79,7 +79,6 @@ export const createReviewSchema = z.object({
   overallRating: rating.optional().nullable(),
   selfComments: optionalString(5000),
   managerComments: optionalString(5000),
-  status: reviewStatus.optional(),
 });
 
 export const updateReviewSchema = z.object({
@@ -90,7 +89,6 @@ export const updateReviewSchema = z.object({
   overallRating: rating.optional().nullable(),
   selfComments: optionalString(5000),
   managerComments: optionalString(5000),
-  status: reviewStatus.optional(),
 });
 
 export const createFeedbackSchema = z.object({
@@ -109,7 +107,6 @@ export const createPromotionSchema = z.object({
   proposedTitle: optionalString(200),
   reason: z.string().min(1).max(5000),
   effectiveDate: requiredDate.optional().nullable(),
-  status: promotionStatus.optional(),
 });
 
 export const updatePromotionSchema = createPromotionSchema.partial();
