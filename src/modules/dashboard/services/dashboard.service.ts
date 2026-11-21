@@ -137,8 +137,11 @@ export class DashboardService {
     }
     const attendanceTrend = trendDays.map((d) => ({
       label: weekDays[d.getUTCDay()]!,
+      // ISO day so the chart can tell weekends from absences; `present` already includes late arrivals.
+      date: dayKey(d),
       present: dayTotals.get(dayKey(d))?.present ?? 0,
       absent: dayTotals.get(dayKey(d))?.absent ?? 0,
+      late: dayTotals.get(dayKey(d))?.late ?? 0,
     }));
     const today = dayTotals.get(dayKey(todayUtc)) ?? { present: 0, absent: 0, late: 0 };
 

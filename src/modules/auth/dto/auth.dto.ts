@@ -29,6 +29,7 @@ export function toPublicUser(user: UserWithAuth) {
     lastName: user.lastName,
     avatarUrl: user.avatarUrl,
     companyId: user.companyId,
+    companySlug: user.company?.slug ?? null,
     status: user.status,
     mfaEnabled: user.mfaEnabled,
     emailVerifiedAt: user.emailVerifiedAt,

@@ -862,6 +862,26 @@ export class PerformanceRepository {
     });
   }
 
+  /** Latest goals (most recently touched first) for the overview. */
+  recentGoals(companyId: string, employeeId?: string, take = 5) {
+    return prisma.performanceGoal.findMany({
+      where: { companyId, deletedAt: null, ...(employeeId ? { employeeId } : {}) },
+      include: goalInclude,
+      orderBy: [{ updatedAt: 'desc' }],
+      take,
+    });
+  }
+
+  /** Latest reviews (most recently touched first) for the overview. */
+  recentReviews(companyId: string, employeeId?: string, take = 5) {
+    return prisma.performanceReview.findMany({
+      where: { companyId, deletedAt: null, ...(employeeId ? { employeeId } : {}) },
+      include: reviewInclude,
+      orderBy: [{ updatedAt: 'desc' }],
+      take,
+    });
+  }
+
   countActiveGoals(companyId: string, employeeId?: string) {
     return prisma.performanceGoal.count({
       where: {

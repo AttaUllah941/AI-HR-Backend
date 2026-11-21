@@ -53,6 +53,8 @@ function exposeDevTokens(): boolean {
   return isDevelopment && emailService.providerName === 'console';
 }
 
+export const PLATFORM_ROLE = 'PLATFORM_SUPER_ADMIN';
+
 export class AuthService {
   constructor(private readonly repo = new AuthRepository()) {}
 
@@ -136,15 +138,34 @@ export class AuthService {
     };
   }
 
+  /**
+   * One login page for everyone. The company is never taken from the request: it is the one stored
+   * on the account (an email belongs to exactly one company), and every later request is scoped by
+   * it. Accounts of a deactivated company cannot sign in; company-less accounts must be platform admins.
+   */
   async login(input: LoginInput, meta: { ip?: string; userAgent?: string }) {
     const email = input.email.toLowerCase();
-    const user = await this.repo.findByEmail(email);
+    const found = await this.repo.findByEmail(email);
+
+    const isPlatformUser =
+      found != null &&
+      found.companyId == null &&
+      found.userRoles.some((ur) => ur.role.code === PLATFORM_ROLE);
+    const companyUsable =
+      found != null &&
+      found.companyId != null &&
+      found.company != null &&
+      found.company.isActive &&
+      found.company.deletedAt == null;
+    // Unknown users, users of an inactive company and stray company-less users look identical.
+    const user = found != null && (isPlatformUser || companyUsable) ? found : null;
 
     if (!user) {
       await this.repo.createLoginAttempt({
+        companyId: found?.companyId,
         email,
         success: false,
-        reason: 'unknown_user',
+        reason: found ? 'company_inactive_or_unassigned' : 'unknown_user',
         ipAddress: meta.ip,
         userAgent: meta.userAgent,
       });

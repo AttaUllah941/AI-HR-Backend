@@ -221,6 +221,8 @@ export class PerformanceService {
       pendingPromotions,
       feedbackCount,
       ratingAgg,
+      recentGoals,
+      recentReviews,
     ] = await Promise.all([
       this.repo.goalStatusCounts(companyId, undefined, year),
       this.repo.reviewStatusCounts(companyId, undefined, year),
@@ -230,6 +232,8 @@ export class PerformanceService {
       this.repo.countPendingPromotions(companyId),
       this.repo.countFeedbackReceived(companyId, undefined, year),
       this.repo.avgReviewRating(companyId, undefined, year),
+      this.repo.recentGoals(companyId),
+      this.repo.recentReviews(companyId),
     ]);
 
     return {
@@ -244,6 +248,8 @@ export class PerformanceService {
       goalsByStatus: countsByKey(goalRows),
       reviewsByStatus: countsByKey(reviewRows),
       promotionsByStatus: countsByKey(promotionRows),
+      recentGoals,
+      recentReviews,
     };
   }
 
@@ -260,6 +266,8 @@ export class PerformanceService {
       pendingPromotions,
       feedbackCount,
       ratingAgg,
+      recentGoals,
+      recentReviews,
     ] = await Promise.all([
       this.repo.goalStatusCounts(companyId, employeeId, year),
       this.repo.reviewStatusCounts(companyId, employeeId, year),
@@ -268,6 +276,8 @@ export class PerformanceService {
       this.repo.countPendingPromotions(companyId, employeeId),
       this.repo.countFeedbackReceived(companyId, employeeId, year),
       this.repo.avgReviewRating(companyId, employeeId, year),
+      this.repo.recentGoals(companyId, employeeId),
+      this.repo.recentReviews(companyId, employeeId),
     ]);
 
     return {
@@ -282,6 +292,8 @@ export class PerformanceService {
       goalsByStatus: countsByKey(goalRows),
       reviewsByStatus: countsByKey(reviewRows),
       promotionsByStatus: countsByKey(promotionRows),
+      recentGoals,
+      recentReviews,
     };
   }
 

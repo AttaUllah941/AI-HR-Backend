@@ -63,7 +63,15 @@ export type EmployeeListQuery = {
   departmentId?: string;
   teamId?: string;
   designationId?: string;
-  sortBy: 'firstName' | 'lastName' | 'employeeCode' | 'joinDate' | 'createdAt';
+  sortBy:
+    | 'firstName'
+    | 'lastName'
+    | 'employeeCode'
+    | 'joinDate'
+    | 'createdAt'
+    | 'department'
+    | 'designation'
+    | 'status';
   sortDir: 'asc' | 'desc';
 };
 
@@ -100,16 +108,30 @@ export class EmployeeRepository {
         : {}),
     };
 
-    const orderBy: Prisma.EmployeeOrderByWithRelationInput =
+    const dir = query.sortDir;
+    const primary: Prisma.EmployeeOrderByWithRelationInput =
       query.sortBy === 'joinDate'
-        ? { joinDate: query.sortDir }
+        ? { joinDate: dir }
         : query.sortBy === 'employeeCode'
-          ? { employeeCode: query.sortDir }
+          ? { employeeCode: dir }
           : query.sortBy === 'createdAt'
-            ? { createdAt: query.sortDir }
+            ? { createdAt: dir }
             : query.sortBy === 'firstName'
-              ? { firstName: query.sortDir }
-              : { lastName: query.sortDir };
+              ? { firstName: dir }
+              : query.sortBy === 'department'
+                ? { department: { name: dir } }
+                : query.sortBy === 'designation'
+                  ? { designation: { name: dir } }
+                  : query.sortBy === 'status'
+                    ? { status: dir }
+                    : { lastName: dir };
+    // Ties (many people share a department or status) fall back to name, then id, so pages never reshuffle.
+    const orderBy: Prisma.EmployeeOrderByWithRelationInput[] = [
+      primary,
+      { lastName: 'asc' },
+      { firstName: 'asc' },
+      { id: 'asc' },
+    ];
 
     const skip = (query.page - 1) * query.pageSize;
 

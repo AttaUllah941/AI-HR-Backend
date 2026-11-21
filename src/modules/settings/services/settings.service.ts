@@ -179,6 +179,10 @@ export class SettingsService {
     actor: AuthActor,
     roles: Array<{ code: string; rolePermissions: Array<{ permission: { code: string } }> }>,
   ) {
+    // Platform-level role: only the platform API may grant it, never a company admin.
+    if (roles.some((r) => r.code === 'PLATFORM_SUPER_ADMIN')) {
+      throw new ForbiddenError('This role cannot be assigned to company users');
+    }
     if (this.isSuperAdmin(actor)) return;
     if (roles.some((r) => r.code === 'SUPER_ADMIN')) {
       throw new ForbiddenError('Only Super Admin can assign the Super Admin role');
@@ -587,58 +591,21 @@ export class SettingsService {
     return { items: permissions };
   }
 
+  /**
+   * Role definitions are shared by every company, so a change here would silently alter other
+   * tenants. Company admins cannot edit them; the platform administrator does it through
+   * PUT /platform/roles/:id/permissions.
+   */
   async updateRolePermissions(
     actor: AuthActor,
-    roleId: string,
-    input: UpdateRolePermissionsInput,
-    meta: RequestMeta,
+    _roleId: string,
+    _input: UpdateRolePermissionsInput,
+    _meta: RequestMeta,
   ) {
     await this.requireCompanyId(actor.id);
-    // Roles are shared across all tenants, so only a Super Admin may edit them.
-    if (!this.isSuperAdmin(actor)) {
-      throw new ForbiddenError('Only Super Admin can edit role permissions');
-    }
-    const role = await this.repo.findRoleById(roleId);
-    if (!role) {
-      throw new NotFoundError('Role not found');
-    }
-
-    if (role.code === 'SUPER_ADMIN') {
-      throw new ForbiddenError('Super Admin permissions cannot be edited');
-    }
-
-    const permissions = await this.repo.findPermissionsByCodes(input.permissionCodes);
-    if (permissions.length !== input.permissionCodes.length) {
-      throw new ValidationError('One or more permissions were not found');
-    }
-
-    // Non–super-admin operators cannot grant roles:manage
-    if (
-      input.permissionCodes.includes('roles:manage') &&
-      !this.actorHas(actor, 'roles:manage')
-    ) {
-      throw new ForbiddenError('You cannot grant roles:manage');
-    }
-
-    const updated = await this.repo.replaceRolePermissions(
-      roleId,
-      permissions.map((p) => p.id),
+    throw new ForbiddenError(
+      'Role definitions are shared across companies and can only be changed by the platform administrator',
     );
-
-    await this.repo.createAuditLog({
-      actorId: actor.id,
-      action: 'settings.roles.permissions.update',
-      entityType: 'Role',
-      entityId: roleId,
-      metadata: {
-        roleCode: role.code,
-        permissionCount: input.permissionCodes.length,
-      },
-      ipAddress: meta.ip,
-      userAgent: meta.userAgent,
-    });
-
-    return mapRole(updated);
   }
 
   async listAuditLogs(actor: AuthActor, params: ListAuditLogsQueryInput = {}) {

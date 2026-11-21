@@ -36,7 +36,16 @@ const EMPLOYEE_STATUSES = [
   'RESIGNED',
   'INACTIVE',
 ] as const;
-const SORT_FIELDS = ['firstName', 'lastName', 'employeeCode', 'joinDate', 'createdAt'] as const;
+const SORT_FIELDS = [
+  'firstName',
+  'lastName',
+  'employeeCode',
+  'joinDate',
+  'createdAt',
+  'department',
+  'designation',
+  'status',
+] as const;
 const EXITED_STATUSES: readonly string[] = ['TERMINATED', 'RESIGNED', 'INACTIVE'];
 
 export type EmployeeListParams = {

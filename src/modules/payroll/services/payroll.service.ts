@@ -123,11 +123,12 @@ export class PayrollService {
     const year = yearParam ? Number(yearParam) : new Date().getUTCFullYear();
     if (!Number.isFinite(year)) throw new ValidationError('Invalid year');
 
-    const [statusRows, ytd, structuresCount, monthRuns] = await Promise.all([
+    const [statusRows, ytd, structuresCount, monthRuns, currency] = await Promise.all([
       this.repo.runStatusCounts(companyId, year),
       this.repo.companyPayslipYtdTotals(companyId, year),
       this.repo.countActiveStructures(companyId),
       this.repo.runMonthAggregates(companyId, year),
+      this.repo.companyCurrency(companyId),
     ]);
 
     const byStatus: Record<string, number> = {};
@@ -138,6 +139,7 @@ export class PayrollService {
     return {
       scope: 'company' as const,
       year,
+      currency,
       activeSalaryStructures: structuresCount,
       runsByStatus: byStatus,
       draftRuns: byStatus.DRAFT ?? 0,
@@ -165,7 +167,7 @@ export class PayrollService {
     const year = yearParam ? Number(yearParam) : new Date().getUTCFullYear();
     if (!Number.isFinite(year)) throw new ValidationError('Invalid year');
 
-    const [ytd, latest, recent] = await Promise.all([
+    const [ytd, latest, recent, currency] = await Promise.all([
       this.repo.payslipYtdTotals(companyId, employeeId, year),
       this.repo.latestPayslip(companyId, employeeId),
       this.repo.listPayslips(companyId, {
@@ -174,11 +176,13 @@ export class PayrollService {
         page: 1,
         pageSize: 5,
       }),
+      this.repo.companyCurrency(companyId),
     ]);
 
     return {
       scope: 'employee' as const,
       year,
+      currency,
       employeeId,
       payslipCount: ytd._count._all,
       ytdGross: roundMoney(ytd._sum.grossPay ?? 0),
@@ -201,13 +205,15 @@ export class PayrollService {
     const year = params.year ? Number(params.year) : new Date().getUTCFullYear();
     if (!Number.isFinite(year)) throw new ValidationError('Invalid year');
 
-    const [statusRows, monthRuns] = await Promise.all([
+    const [statusRows, monthRuns, currency] = await Promise.all([
       this.repo.runStatusCounts(companyId, year),
       this.repo.runMonthAggregates(companyId, year),
+      this.repo.companyCurrency(companyId),
     ]);
 
     return {
       year,
+      currency,
       byStatus: statusRows.map((row) => ({
         status: row.status,
         count: row._count._all,
@@ -451,7 +457,11 @@ export class PayrollService {
       year,
       month,
     });
-    return { items, pagination: paginationMeta(page, pageSize, total) };
+    const currency = await this.repo.companyCurrency(companyId);
+    return {
+      items: items.map((run) => ({ ...run, currency })),
+      pagination: paginationMeta(page, pageSize, total),
+    };
   }
 
   async getRun(actor: AuthActor, id: string) {

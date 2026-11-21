@@ -1,7 +1,23 @@
 import type { Prisma, SessionStatus, UserStatus } from '@prisma/client';
 import { prisma } from '../../../config/database.js';
+import { RESERVED_SLUGS, slugify } from '../../../utils/slug.js';
+
+type SlugClient = Pick<typeof prisma, 'company'>;
+
+/** Returns a company slug that is not taken (and not reserved), appending -2, -3 ... as needed. */
+export async function uniqueCompanySlug(client: SlugClient, name: string): Promise<string> {
+  const base = slugify(name);
+  for (let i = 1; i < 1000; i += 1) {
+    const candidate = i === 1 ? base : `${base}-${i}`;
+    if (RESERVED_SLUGS.has(candidate)) continue;
+    const taken = await client.company.findUnique({ where: { slug: candidate }, select: { id: true } });
+    if (!taken) return candidate;
+  }
+  throw new Error('Could not allocate a unique company slug');
+}
 
 const userAuthInclude = {
+  company: { select: { slug: true, isActive: true, deletedAt: true } },
   userRoles: {
     include: {
       role: {
@@ -63,7 +79,8 @@ export class AuthRepository {
       const role = await tx.role.findUniqueOrThrow({ where: { code: data.roleCode } });
       let companyId: string | undefined;
       if (data.companyName) {
-        const company = await tx.company.create({ data: { name: data.companyName } });
+        const slug = await uniqueCompanySlug(tx, data.companyName);
+        const company = await tx.company.create({ data: { name: data.companyName, slug } });
         companyId = company.id;
         await tx.companySecurityPolicy.create({ data: { companyId } });
       }
@@ -109,11 +126,13 @@ export class AuthRepository {
     });
   }
 
-  createCompany(name: string) {
+  async createCompany(name: string) {
+    const slug = await uniqueCompanySlug(prisma, name);
     return prisma.company.create({
-      data: { name },
+      data: { name, slug },
     });
   }
+
 
   updateUser(id: string, data: Prisma.UserUpdateInput) {
     return prisma.user.update({

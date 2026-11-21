@@ -406,7 +406,7 @@ export class PayrollRepository {
       ...(query.year ? { year: query.year } : {}),
       ...(query.month ? { month: query.month } : {}),
     };
-    const [items, total] = await Promise.all([
+    const [runs, total] = await Promise.all([
       prisma.payrollRun.findMany({
         where,
         include: { _count: { select: { entries: true } } },
@@ -416,7 +416,31 @@ export class PayrollRepository {
       }),
       prisma.payrollRun.count({ where }),
     ]);
+
+    // Gross and net totals for the runs on this page, in one grouped query.
+    const sums = runs.length
+      ? await prisma.payrollEntry.groupBy({
+          by: ['payrollRunId'],
+          where: { payrollRunId: { in: runs.map((r) => r.id) } },
+          _sum: { grossPay: true, netPay: true },
+        })
+      : [];
+    const byRun = new Map(sums.map((row) => [row.payrollRunId, row._sum]));
+    const items = runs.map((run) => ({
+      ...run,
+      totalGross: byRun.get(run.id)?.grossPay ?? 0,
+      totalNet: byRun.get(run.id)?.netPay ?? 0,
+    }));
     return { items, total };
+  }
+
+  /** ISO currency of the company (payroll amounts are in this currency). */
+  async companyCurrency(companyId: string): Promise<string> {
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { currency: true },
+    });
+    return company?.currency ?? 'USD';
   }
 
   findRun(companyId: string, id: string, db: DbClient = prisma) {

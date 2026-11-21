@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { extractRolesAndPermissions } from '../modules/auth/dto/auth.dto.js';
 import { AuthRepository } from '../modules/auth/repositories/auth.repository.js';
-import { UnauthorizedError } from '../utils/app-error.js';
+import { ForbiddenError, UnauthorizedError } from '../utils/app-error.js';
 import { verifyAccessToken } from '../utils/jwt.js';
 import { asyncHandler } from './async-handler.js';
 import { attachRouteMeta } from '../docs/route-meta.js';
@@ -14,6 +14,9 @@ export interface AuthUser {
   roles: string[];
   permissions: string[];
   sessionId?: string;
+  /** Tenant of the account (null for platform-level accounts). Always taken from the database. */
+  companyId: string | null;
+  companySlug: string | null;
 }
 
 declare global {
@@ -40,6 +43,11 @@ async function hydrateAuthUser(userId: string, sessionId?: string): Promise<Auth
     return null;
   }
 
+  // A deactivated or deleted company locks out every user of that tenant immediately.
+  if (user.companyId != null && (!user.company || !user.company.isActive || user.company.deletedAt)) {
+    return null;
+  }
+
   const { roles, permissions } = extractRolesAndPermissions(user);
   return {
     id: user.id,
@@ -47,6 +55,8 @@ async function hydrateAuthUser(userId: string, sessionId?: string): Promise<Auth
     roles,
     permissions,
     sessionId,
+    companyId: user.companyId,
+    companySlug: user.company?.slug ?? null,
   };
 }
 
@@ -79,6 +89,18 @@ async function runAuthMiddleware(
       return;
     }
     req.user = user;
+
+    // The SPA sends the slug from the URL it is showing. A mismatch means the user is trying to
+    // view another tenant's area, so refuse it even though every query is scoped by companyId.
+    const claimedSlug = req.headers['x-company-slug'];
+    if (
+      typeof claimedSlug === 'string' &&
+      claimedSlug !== '' &&
+      claimedSlug.toLowerCase() !== (user.companySlug ?? '')
+    ) {
+      next(new ForbiddenError('You do not have access to this company'));
+      return;
+    }
     next();
   } catch {
     next(new UnauthorizedError('Invalid or expired access token'));

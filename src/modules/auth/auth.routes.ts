@@ -35,6 +35,7 @@ authRouter.post(
   validateBody(loginSchema),
   asyncHandler(controller.login),
 );
+
 authRouter.post(
   '/refresh',
   refreshRateLimiter,

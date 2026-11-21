@@ -17,7 +17,8 @@
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down",
     "backup:db": "docker compose --profile backup run --rm db-backup",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prisma:seed:quantum": "tsx prisma/seed-quantum.ts"
   },
   "keywords": [],
   "author": "",
