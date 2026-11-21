@@ -11,12 +11,14 @@
  *   QTS_CREDENTIALS_FILE      where to write the generated demo logins (plaintext, local file only)
  *   PLATFORM_ADMIN_EMAIL      optional: also creates one PLATFORM_SUPER_ADMIN (no company)
  *   ALLOW_TENANT_SEED=true    required when NODE_ENV=production
+ *   QTS_PASSWORD_SECRET       optional: derive each password from HMAC(secret, email) instead of randomly, so the
+ *                             logins can be regenerated off-server without ever printing them in server logs
  */
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import 'dotenv/config';
 import { hash } from 'bcryptjs';
-import { randomInt } from 'node:crypto';
+import { createHmac, randomInt } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { ensureRbac, PLATFORM_ROLE } from './rbac.js';
 
@@ -26,6 +28,20 @@ if (process.env.NODE_ENV === 'production' && process.env.ALLOW_TENANT_SEED !== '
 }
 
 const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL! }) });
+
+const PW_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+/** Random by default; deterministic per email when QTS_PASSWORD_SECRET is set. */
+function makePassword(email: string, length: number, suffix: string): string {
+  const secret = process.env.QTS_PASSWORD_SECRET;
+  let pw = '';
+  if (secret) {
+    const digest = createHmac('sha256', secret).update(email).digest();
+    for (let i = 0; i < length; i += 1) pw += PW_ALPHABET[digest[i]! % PW_ALPHABET.length];
+  } else {
+    for (let i = 0; i < length; i += 1) pw += PW_ALPHABET[randomInt(PW_ALPHABET.length)];
+  }
+  return pw + suffix;
+}
 
 const SLUG = 'quantum-tech-solutions';
 const EMAIL_DOMAIN = 'quantumtech.demo';
@@ -265,10 +281,7 @@ async function main() {
     let user = await prisma.user.findUnique({ where: { email } });
     if (user && user.companyId !== companyId) throw new Error(`${email} already belongs to another company`);
     if (!user) {
-      const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-      let pw = '';
-      for (let i = 0; i < 14; i += 1) pw += alphabet[randomInt(alphabet.length)];
-      pw += '#7';
+      const pw = makePassword(email, 14, '#7');
       user = await prisma.user.create({
         data: { email, passwordHash: await hash(pw, 12), firstName: p.first, lastName: p.last, phone: `0300-000${pad(p.n, 4)}`, companyId, status: 'ACTIVE', emailVerifiedAt: new Date() },
       });
@@ -640,10 +653,7 @@ async function main() {
     let pu = await prisma.user.findUnique({ where: { email: platformEmail } });
     if (pu && pu.companyId) throw new Error('PLATFORM_ADMIN_EMAIL belongs to a company user');
     if (!pu) {
-      const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-      let pw = '';
-      for (let i = 0; i < 16; i += 1) pw += alphabet[randomInt(alphabet.length)];
-      pw += '#9';
+      const pw = makePassword(platformEmail, 16, '#9');
       pu = await prisma.user.create({ data: { email: platformEmail, passwordHash: await hash(pw, 12), firstName: 'Platform', lastName: 'Admin', status: 'ACTIVE', emailVerifiedAt: new Date() } });
       credentials.push(`PLATFORM,${platformEmail},${PLATFORM_ROLE.code},${pw}`);
     }

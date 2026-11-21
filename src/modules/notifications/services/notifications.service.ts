@@ -13,6 +13,7 @@ import type {
   UpsertPreferencesInput,
 } from '../validators/notifications.validators.js';
 import { cursorPage, wantsCursor } from '../../../utils/cursor.js';
+import { notificationHub } from '../notification-hub.js';
 
 type AuthActor = { id: string; permissions: string[] };
 
@@ -359,6 +360,11 @@ export class NotificationsService {
             sentAt: new Date(),
           });
           created.push({ ...notification, status: 'SENT' as const });
+          notificationHub.publish(recipient.id, {
+            id: notification.id,
+            category: notification.category,
+            title: notification.title,
+          });
         } else if (channel === 'EMAIL') {
           await emailService.send({
             to: recipient.email,

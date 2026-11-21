@@ -8,6 +8,12 @@ import {
 } from '../../../utils/app-error.js';
 import { parsePagination, paginationMeta } from '../../../utils/pagination.js';
 import { LeaveRepository } from '../repositories/leave.repository.js';
+import {
+  managerUserIdOf,
+  notifyUsers,
+  userIdOfEmployee,
+  userIdsWithPermission,
+} from '../../notifications/services/notify.service.js';
 import type {
   CreateLeaveRequestInput,
   CreateLeaveTypeInput,
@@ -553,7 +559,70 @@ export class LeaveService {
       entityId: requestId,
     });
 
-    return this.repo.findRequest(companyId, requestId);
+    const created = await this.repo.findRequest(companyId, requestId);
+    if (created && status === 'PENDING') {
+      void this.notifyReviewers(companyId, actor.id, created);
+    }
+    return created;
+  }
+
+  // —— Notifications (best effort; never fail the request) ——
+  private leaveSummary(request: {
+    days: unknown;
+    startDate: Date;
+    endDate: Date;
+    leaveType: { name: string };
+  }): string {
+    const day = (d: Date) => d.toISOString().slice(0, 10);
+    const days = Number(request.days);
+    const span =
+      day(request.startDate) === day(request.endDate)
+        ? day(request.startDate)
+        : `${day(request.startDate)} to ${day(request.endDate)}`;
+    return `${days} day${days === 1 ? '' : 's'} of ${request.leaveType.name} (${span})`;
+  }
+
+  private async notifyReviewers(
+    companyId: string,
+    actorUserId: string,
+    request: NonNullable<Awaited<ReturnType<LeaveRepository['findRequest']>>>,
+  ): Promise<void> {
+    const [reviewers, manager] = await Promise.all([
+      userIdsWithPermission(companyId, 'leave:update'),
+      managerUserIdOf(companyId, request.employeeId),
+    ]);
+    const requesterUser = await userIdOfEmployee(companyId, request.employeeId);
+    const recipients = [...reviewers, ...(manager ? [manager] : [])].filter(
+      (id) => id !== actorUserId && id !== requesterUser,
+    );
+    await notifyUsers({
+      companyId,
+      userIds: recipients,
+      category: 'LEAVE',
+      title: 'Leave request awaiting review',
+      body: `${request.employee.firstName} ${request.employee.lastName} requested ${this.leaveSummary(request)}.`,
+      data: { leaveRequestId: request.id, link: '/leave/requests' },
+    });
+  }
+
+  private async notifyRequester(
+    companyId: string,
+    actorUserId: string,
+    request: NonNullable<Awaited<ReturnType<LeaveRepository['findRequest']>>>,
+    outcome: 'approved' | 'rejected' | 'cancelled',
+    notes?: string | null,
+  ): Promise<void> {
+    const userId = await userIdOfEmployee(companyId, request.employeeId);
+    if (!userId || userId === actorUserId) return;
+    const note = notes?.trim() ? ` Note: ${notes.trim().slice(0, 200)}` : '';
+    await notifyUsers({
+      companyId,
+      userIds: [userId],
+      category: 'LEAVE',
+      title: `Leave request ${outcome}`,
+      body: `Your request for ${this.leaveSummary(request)} was ${outcome}.${note}`,
+      data: { leaveRequestId: request.id, link: '/leave/requests' },
+    });
   }
 
   async updateRequest(actor: AuthActor, id: string, input: UpdateLeaveRequestInput) {
@@ -698,7 +767,9 @@ export class LeaveService {
         tx,
       );
     });
-    return this.repo.findRequest(companyId, id);
+    const approved = await this.repo.findRequest(companyId, id);
+    if (approved) void this.notifyRequester(companyId, actor.id, approved, 'approved', input.reviewNotes);
+    return approved;
   }
 
   async rejectRequest(actor: AuthActor, id: string, input: ReviewLeaveRequestInput) {
@@ -749,7 +820,9 @@ export class LeaveService {
         tx,
       );
     });
-    return this.repo.findRequest(companyId, id);
+    const rejected = await this.repo.findRequest(companyId, id);
+    if (rejected) void this.notifyRequester(companyId, actor.id, rejected, 'rejected', input.reviewNotes);
+    return rejected;
   }
 
   async cancelRequest(actor: AuthActor, id: string) {
@@ -815,7 +888,9 @@ export class LeaveService {
         tx,
       );
     });
-    return this.repo.findRequest(companyId, id);
+    const cancelled = await this.repo.findRequest(companyId, id);
+    if (cancelled) void this.notifyRequester(companyId, actor.id, cancelled, 'cancelled');
+    return cancelled;
   }
 
   async mySummary(actor: AuthActor, yearParam?: string) {

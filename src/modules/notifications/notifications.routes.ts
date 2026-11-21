@@ -4,6 +4,7 @@ import { authMiddleware } from '../../middleware/auth.middleware.js';
 import { requirePermissions } from '../../middleware/rbac.middleware.js';
 import { validateBody, validateQuery } from '../../middleware/validate.middleware.js';
 import { NotificationsController } from './controllers/notifications.controller.js';
+import { notificationStream } from './notification-stream.js';
 import {
   createTemplateSchema,
   feedQuerySchema,
@@ -30,6 +31,8 @@ notificationsRouter.get(
   requirePermissions('notifications:view'),
   asyncHandler(controller.summary),
 );
+// Server-Sent Events: pushes a tick whenever the signed-in user gets a notification.
+notificationsRouter.get('/stream', requirePermissions('notifications:view'), notificationStream);
 notificationsRouter.get(
   '/feed',
   requirePermissions('notifications:view'),
