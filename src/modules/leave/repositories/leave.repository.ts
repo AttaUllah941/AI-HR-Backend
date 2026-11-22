@@ -46,6 +46,8 @@ export type LeaveRequestListQuery = {
   pageSize: number;
   status?: LeaveRequestStatus;
   employeeId?: string;
+  /** Restrict to these employees (a manager's team). Ignored when `employeeId` is set. */
+  employeeIds?: string[];
   leaveTypeId?: string;
   dateFrom?: Date;
   dateTo?: Date;
@@ -184,12 +186,16 @@ export class LeaveRepository {
   listBalances(
     companyId: string,
     year: number,
-    query: { employeeId?: string; page: number; pageSize: number },
+    query: { employeeId?: string; employeeIds?: string[]; page: number; pageSize: number },
   ) {
     const where = {
       companyId,
       year,
-      ...(query.employeeId ? { employeeId: query.employeeId } : {}),
+      ...(query.employeeId
+        ? { employeeId: query.employeeId }
+        : query.employeeIds
+          ? { employeeId: { in: query.employeeIds } }
+          : {}),
     };
     return Promise.all([
       prisma.leaveBalance.findMany({
@@ -290,7 +296,11 @@ export class LeaveRepository {
       companyId,
       ...notDeleted,
       ...(query.status ? { status: query.status } : {}),
-      ...(query.employeeId ? { employeeId: query.employeeId } : {}),
+      ...(query.employeeId
+        ? { employeeId: query.employeeId }
+        : query.employeeIds
+          ? { employeeId: { in: query.employeeIds } }
+          : {}),
       ...(query.leaveTypeId ? { leaveTypeId: query.leaveTypeId } : {}),
       ...(query.dateFrom || query.dateTo
         ? {
@@ -409,6 +419,15 @@ export class LeaveRepository {
       data: this.buildRequestUpdate(data),
     });
     return result.count;
+  }
+
+  /** Employees whose direct manager is `managerEmployeeId`. */
+  async findDirectReportIds(companyId: string, managerEmployeeId: string): Promise<string[]> {
+    const rows = await prisma.employee.findMany({
+      where: { companyId, managerId: managerEmployeeId, ...notDeleted },
+      select: { id: true },
+    });
+    return rows.map((r) => r.id);
   }
 
   findEmployeeManagerId(companyId: string, employeeId: string) {

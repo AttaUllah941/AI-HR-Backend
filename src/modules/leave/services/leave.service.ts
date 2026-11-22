@@ -97,6 +97,43 @@ export class LeaveService {
     return linked.id;
   }
 
+  /**
+   * Whose leave this actor may see and act on.
+   * - `leave:update` (HR / admins): everyone in the company -> `all`.
+   * - `leave:approve` only (managers): themselves and their direct reports -> `team`.
+   * - anyone else: only themselves -> `self`.
+   */
+  private async reviewScope(
+    companyId: string,
+    actor: AuthActor,
+  ): Promise<{ kind: 'all' } | { kind: 'team'; selfId: string | null; ids: string[] } | { kind: 'self' }> {
+    if (actor.permissions.includes('leave:update')) return { kind: 'all' };
+    if (!actor.permissions.includes('leave:approve')) return { kind: 'self' };
+    const self = await this.repo.findEmployeeByUserId(companyId, actor.id);
+    const reports = self ? await this.repo.findDirectReportIds(companyId, self.id) : [];
+    return { kind: 'team', selfId: self?.id ?? null, ids: [...(self ? [self.id] : []), ...reports] };
+  }
+
+  /** Adds `canReview`: true when this actor may approve or reject the (pending) request right now. */
+  private async withReviewFlag<T extends { employeeId: string; status: string }>(
+    companyId: string,
+    actor: AuthActor,
+    items: T[],
+  ): Promise<Array<T & { canReview: boolean }>> {
+    if (!actor.permissions.includes('leave:approve')) {
+      return items.map((i) => ({ ...i, canReview: false }));
+    }
+    const scope = await this.reviewScope(companyId, actor);
+    const self = scope.kind === 'team' ? scope.selfId : (await this.repo.findEmployeeByUserId(companyId, actor.id))?.id ?? null;
+    return items.map((i) => ({
+      ...i,
+      canReview:
+        i.status === 'PENDING' &&
+        i.employeeId !== self &&
+        (scope.kind === 'all' || (scope.kind === 'team' && scope.ids.includes(i.employeeId))),
+    }));
+  }
+
   private canManageOthers(actor: AuthActor): boolean {
     return (
       actor.permissions.includes('leave:update') || actor.permissions.includes('leave:approve')
@@ -115,6 +152,11 @@ export class LeaveService {
           throw new ForbiddenError('You can only submit leave for your own employee profile');
         }
         return linked.id;
+      }
+      // Managers (leave:approve without leave:update) can only file for their own team.
+      const scope = await this.reviewScope(companyId, actor);
+      if (scope.kind === 'team' && !scope.ids.includes(employeeId)) {
+        throw new ForbiddenError('You can only submit leave for yourself and your direct reports');
       }
       const employee = await this.repo.findEmployeeBasic(companyId, employeeId);
       if (!employee) throw new ValidationError('Invalid employee');
@@ -248,7 +290,7 @@ export class LeaveService {
     companyId: string,
     actor: AuthActor,
     employeeId: string,
-    verb: 'approve' | 'reject',
+    verb: 'approve' | 'reject' | 'cancel',
   ) {
     const linked = await this.repo.findEmployeeByUserId(companyId, actor.id);
     if (linked && linked.id === employeeId) {
@@ -348,10 +390,20 @@ export class LeaveService {
     if (!Number.isFinite(year)) throw new ValidationError('Invalid year');
 
     let employeeId = params.employeeId || undefined;
+    let employeeIds: string[] | undefined;
     if (!this.canManageOthers(actor)) {
       employeeId = await this.resolveEmployeeId(companyId, actor.id, null);
-    } else if (employeeId) {
-      await this.resolveEmployeeId(companyId, actor.id, employeeId);
+    } else {
+      const scope = await this.reviewScope(companyId, actor);
+      if (scope.kind === 'team') {
+        if (employeeId && !scope.ids.includes(employeeId)) {
+          throw new ForbiddenError('You can only view balances for yourself and your direct reports');
+        }
+        if (!employeeId) employeeIds = scope.ids;
+      }
+      if (employeeId) {
+        await this.resolveEmployeeId(companyId, actor.id, employeeId);
+      }
     }
 
     const { page, pageSize } = parsePagination(params, {
@@ -360,6 +412,7 @@ export class LeaveService {
     });
     const [items, total] = await this.repo.listBalances(companyId, year, {
       employeeId,
+      employeeIds,
       page,
       pageSize,
     });
@@ -416,8 +469,17 @@ export class LeaveService {
     const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20));
 
     let employeeId = params.employeeId || undefined;
+    let employeeIds: string[] | undefined;
     if (!this.canManageOthers(actor)) {
       employeeId = await this.resolveEmployeeId(companyId, actor.id, null);
+    } else {
+      const scope = await this.reviewScope(companyId, actor);
+      if (scope.kind === 'team') {
+        if (employeeId && !scope.ids.includes(employeeId)) {
+          throw new ForbiddenError('You can only view leave for yourself and your direct reports');
+        }
+        if (!employeeId) employeeIds = scope.ids;
+      }
     }
 
     const dateFrom = params.dateFrom ? startOfUtcDay(new Date(params.dateFrom)) : undefined;
@@ -442,13 +504,14 @@ export class LeaveService {
       pageSize,
       status: status || undefined,
       employeeId,
+      employeeIds,
       leaveTypeId: params.leaveTypeId || undefined,
       dateFrom,
       dateTo,
     });
 
     return {
-      items,
+      items: await this.withReviewFlag(companyId, actor, items),
       pagination: {
         page,
         pageSize,
@@ -467,8 +530,13 @@ export class LeaveService {
       if (request.employeeId !== selfId) {
         throw new ForbiddenError('You can only view your own leave requests');
       }
+    } else {
+      const scope = await this.reviewScope(companyId, actor);
+      if (scope.kind === 'team' && !scope.ids.includes(request.employeeId)) {
+        throw new ForbiddenError('You can only view leave for yourself and your direct reports');
+      }
     }
-    return request;
+    return (await this.withReviewFlag(companyId, actor, [request]))[0]!;
   }
 
   async createRequest(actor: AuthActor, input: CreateLeaveRequestInput) {
@@ -833,14 +901,17 @@ export class LeaveService {
       throw new ValidationError('Only pending or approved requests can be cancelled');
     }
 
-    if (!this.canManageOthers(actor)) {
-      const selfId = await this.resolveEmployeeId(companyId, actor.id, null);
-      if (existing.employeeId !== selfId) {
+    const self = await this.repo.findEmployeeByUserId(companyId, actor.id);
+    if (self && self.id === existing.employeeId) {
+      // Your own request: pending can always be withdrawn; approved leave only by HR.
+      if (existing.status === 'APPROVED' && !actor.permissions.includes('leave:update')) {
+        throw new ForbiddenError('Approved leave can only be cancelled by HR');
+      }
+    } else {
+      if (!this.canManageOthers(actor)) {
         throw new ForbiddenError('You can only cancel your own leave requests');
       }
-      if (existing.status === 'APPROVED') {
-        throw new ForbiddenError('Approved leave can only be cancelled by HR/managers');
-      }
+      await this.assertCanReview(companyId, actor, existing.employeeId, 'cancel');
     }
 
     const year = startOfUtcDay(existing.startDate).getUTCFullYear();
