@@ -214,6 +214,7 @@ async function seed(): Promise<void> {
     create: {
       id: 'seed-company-zenith',
       name: 'Zenith Enterprises',
+      slug: 'zenith-enterprises',
       legalName: 'Zenith Enterprises Pvt Ltd',
       email: 'hr@zenith.local',
       timezone: 'Asia/Karachi',
@@ -637,6 +638,38 @@ async function seed(): Promise<void> {
       teamId: hrOpsTeam.id,
       designationId: mgrDesignation.id,
       joinDate: new Date('2019-08-20'),
+      workLocation: 'Karachi — Head Office',
+      city: 'Karachi',
+      country: 'Pakistan',
+    },
+  });
+
+  // The demo super admin also gets an employee profile, so self-service pages (attendance clock-in,
+  // leave, payroll, performance) work for that login instead of "No employee profile linked".
+  await prisma.employee.upsert({
+    where: { companyId_employeeCode: { companyId, employeeCode: 'EMP005' } },
+    update: {
+      userId: superAdmin.id,
+      status: 'ACTIVE',
+      departmentId: hrDept.id,
+      teamId: hrOpsTeam.id,
+      branchId: headOffice.id,
+      designationId: mgrDesignation.id,
+    },
+    create: {
+      companyId,
+      userId: superAdmin.id,
+      employeeCode: 'EMP005',
+      firstName: 'Super',
+      lastName: 'Admin',
+      email: 'superadmin@zenith.local',
+      status: 'ACTIVE',
+      employmentType: 'FULL_TIME',
+      branchId: headOffice.id,
+      departmentId: hrDept.id,
+      teamId: hrOpsTeam.id,
+      designationId: mgrDesignation.id,
+      joinDate: new Date('2019-01-01'),
       workLocation: 'Karachi — Head Office',
       city: 'Karachi',
       country: 'Pakistan',
