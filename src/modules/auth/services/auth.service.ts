@@ -5,7 +5,7 @@ import {
   UnauthorizedError,
   ValidationError,
 } from '../../../utils/app-error.js';
-import { hashPassword, verifyPassword } from '../../../utils/password.js';
+import { hashPassword, spendPasswordCheckTime, verifyPassword } from '../../../utils/password.js';
 import { generateRawToken, hashToken } from '../../../utils/token-hash.js';
 import {
   getRefreshExpiryDate,
@@ -161,6 +161,8 @@ export class AuthService {
     const user = found != null && (isPlatformUser || companyUsable) ? found : null;
 
     if (!user) {
+      // Same work as a real check, so response time does not reveal whether the email exists.
+      await spendPasswordCheckTime(input.password);
       await this.repo.createLoginAttempt({
         companyId: found?.companyId,
         email,
@@ -228,7 +230,7 @@ export class AuthService {
       throw new ForbiddenError('Account is temporarily locked due to failed sign-in attempts');
     }
 
-    if (user.status === 'SUSPENDED' || user.status === 'DELETED') {
+    if (user.status === 'SUSPENDED' || user.status === 'INACTIVE' || user.status === 'DELETED') {
       await this.repo.createLoginAttempt({
         companyId: user.companyId,
         userId: user.id,
@@ -315,7 +317,7 @@ export class AuthService {
       throw new ForbiddenError('Please verify your email before signing in');
     }
 
-    if (user.status === 'SUSPENDED' || user.status === 'DELETED') {
+    if (user.status === 'SUSPENDED' || user.status === 'INACTIVE' || user.status === 'DELETED') {
       throw new ForbiddenError('Account is not allowed to sign in');
     }
 
@@ -374,6 +376,7 @@ export class AuthService {
     if (
       !user ||
       user.status === 'SUSPENDED' ||
+      user.status === 'INACTIVE' ||
       user.status === 'DELETED' ||
       user.status === 'PENDING_VERIFICATION' ||
       (user.lockedUntil != null && user.lockedUntil > new Date())
@@ -526,8 +529,13 @@ export class AuthService {
       throw new ValidationError('Invalid or expired verification token');
     }
 
+    // Only a pending account becomes active; one an admin has suspended since must stay blocked.
+    const account = await this.repo.findById(record.userId);
+    if (!account) {
+      throw new ValidationError('Invalid or expired verification token');
+    }
     await this.repo.updateUser(record.userId, {
-      status: 'ACTIVE',
+      ...(account.status === 'PENDING_VERIFICATION' ? { status: 'ACTIVE' as const } : {}),
       emailVerifiedAt: new Date(),
     });
     await this.repo.markEmailVerificationUsed(record.id);

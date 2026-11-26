@@ -15,7 +15,7 @@ const ipOrCidr = z
 
 export const createBranchSchema = z.object({
   name: z.string().min(1).max(150),
-  code: z.string().min(1).max(50),
+  code: z.string().trim().min(1).max(50),
   addressLine1: optionalString(200),
   addressLine2: optionalString(200),
   city: optionalString(100),
@@ -36,7 +36,7 @@ export const updateBranchSchema = createBranchSchema.partial();
 
 export const createDepartmentSchema = z.object({
   name: z.string().min(1).max(150),
-  code: z.string().min(1).max(50),
+  code: z.string().trim().min(1).max(50),
   description: optionalString(500),
   branchId: optionalString(50),
   parentId: optionalString(50),
@@ -47,7 +47,7 @@ export const updateDepartmentSchema = createDepartmentSchema.partial();
 
 export const createTeamSchema = z.object({
   name: z.string().min(1).max(150),
-  code: z.string().min(1).max(50),
+  code: z.string().trim().min(1).max(50),
   description: optionalString(500),
   departmentId: z.string().min(1),
   isActive: z.boolean().optional(),
@@ -57,7 +57,7 @@ export const updateTeamSchema = createTeamSchema.partial();
 
 export const createDesignationSchema = z.object({
   name: z.string().min(1).max(150),
-  code: z.string().min(1).max(50),
+  code: z.string().trim().min(1).max(50),
   level: z.number().int().min(1).max(100).optional(),
   description: optionalString(500),
   isActive: z.boolean().optional(),

@@ -7,8 +7,15 @@ const optionalAvatarUrl = z.preprocess(
   emptyToUndefined,
   z
     .union([
-      z.string().url().max(500),
-      z.string().regex(/^\/[\w\-./?=&%]+$/, 'Relative avatar path must start with /').max(500),
+      z
+        .string()
+        .url()
+        .max(500)
+        .regex(/^https:\/\//i, 'Use an https:// address'),
+      z
+        .string()
+        .regex(/^\/(?!\/)[\w\-./?=&%]+$/, 'Relative avatar path must start with a single /')
+        .max(500),
       z.null(),
     ])
     .optional(),

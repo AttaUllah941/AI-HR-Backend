@@ -30,6 +30,7 @@ const MFA_CHALLENGE_SECRET = `${env.JWT_ACCESS_SECRET}:mfa-challenge`;
 
 export function signAccessToken(payload: Omit<AccessTokenPayload, 'type'>): string {
   return jwt.sign({ ...payload, type: 'access' }, env.JWT_ACCESS_SECRET, {
+    algorithm: 'HS256',
     expiresIn: env.JWT_ACCESS_EXPIRES_IN as jwt.SignOptions['expiresIn'],
   });
 }
@@ -39,18 +40,20 @@ export function signRefreshToken(
   expiresIn: string = env.JWT_REFRESH_EXPIRES_IN,
 ): string {
   return jwt.sign({ ...payload, type: 'refresh' }, env.JWT_REFRESH_SECRET, {
+    algorithm: 'HS256',
     expiresIn: expiresIn as jwt.SignOptions['expiresIn'],
   });
 }
 
 export function signMfaChallengeToken(payload: Omit<MfaChallengePayload, 'type'>): string {
   return jwt.sign({ ...payload, type: 'mfa_challenge' }, MFA_CHALLENGE_SECRET, {
+    algorithm: 'HS256',
     expiresIn: '5m',
   });
 }
 
 export function verifyAccessToken(token: string): AccessTokenPayload {
-  const payload = jwt.verify(token, env.JWT_ACCESS_SECRET) as AccessTokenPayload;
+  const payload = jwt.verify(token, env.JWT_ACCESS_SECRET, { algorithms: ['HS256'] }) as AccessTokenPayload;
   if (payload.type !== 'access') {
     throw new Error('Invalid access token type');
   }
@@ -58,7 +61,7 @@ export function verifyAccessToken(token: string): AccessTokenPayload {
 }
 
 export function verifyRefreshToken(token: string): RefreshTokenPayload {
-  const payload = jwt.verify(token, env.JWT_REFRESH_SECRET) as RefreshTokenPayload;
+  const payload = jwt.verify(token, env.JWT_REFRESH_SECRET, { algorithms: ['HS256'] }) as RefreshTokenPayload;
   if (payload.type !== 'refresh') {
     throw new Error('Invalid refresh token type');
   }
@@ -66,7 +69,7 @@ export function verifyRefreshToken(token: string): RefreshTokenPayload {
 }
 
 export function verifyMfaChallengeToken(token: string): MfaChallengePayload {
-  const payload = jwt.verify(token, MFA_CHALLENGE_SECRET) as MfaChallengePayload;
+  const payload = jwt.verify(token, MFA_CHALLENGE_SECRET, { algorithms: ['HS256'] }) as MfaChallengePayload;
   if (payload.type !== 'mfa_challenge') {
     throw new Error('Invalid MFA challenge token type');
   }

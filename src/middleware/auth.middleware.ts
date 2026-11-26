@@ -36,6 +36,7 @@ async function hydrateAuthUser(userId: string, sessionId?: string): Promise<Auth
     !user ||
     user.sessions.length === 0 ||
     user.status === 'SUSPENDED' ||
+    user.status === 'INACTIVE' ||
     user.status === 'DELETED' ||
     user.status === 'PENDING_VERIFICATION' ||
     (user.lockedUntil != null && user.lockedUntil > new Date())

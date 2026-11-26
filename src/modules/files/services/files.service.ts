@@ -188,7 +188,7 @@ export class FilesService {
         bucket: settings?.storageBucket ?? null,
         region: settings?.storageRegion ?? null,
         publicBaseUrl: settings?.storagePublicBaseUrl ?? null,
-        runtimeProvider: 'local',
+        runtimeProvider: env.FILE_STORAGE_PROVIDER,
       },
     };
   }
@@ -285,11 +285,6 @@ export class FilesService {
     if (category === 'AVATAR') {
       employeeId = null;
       candidateId = null;
-    }
-
-    const settings = await this.repo.getCompanySettings(user.companyId);
-    if (settings?.storageProvider && settings.storageProvider !== 'local') {
-      // Cloud providers are configured in Settings; runtime still uses local until Phase integrations.
     }
 
     const blob = await getActiveFileStorage().save(

@@ -238,12 +238,26 @@ export class AttendanceRepository {
   }
 
   private attendanceWhere(companyId: string, query: AttendanceListQuery): Prisma.AttendanceRecordWhereInput {
+    // Both filters narrow the same relation, so they are combined instead of one replacing the other.
+    const employeeFilters: Prisma.EmployeeWhereInput[] = [];
+    if (query.departmentId) {
+      employeeFilters.push({ departmentId: query.departmentId });
+    }
+    if (query.search) {
+      employeeFilters.push({
+        OR: [
+          { firstName: { contains: query.search, mode: 'insensitive' } },
+          { lastName: { contains: query.search, mode: 'insensitive' } },
+          { email: { contains: query.search, mode: 'insensitive' } },
+          { employeeCode: { contains: query.search, mode: 'insensitive' } },
+        ],
+      });
+    }
     return {
       companyId,
       ...notDeleted,
       ...(query.status ? { status: query.status } : {}),
       ...(query.employeeId ? { employeeId: query.employeeId } : {}),
-      ...(query.departmentId ? { employee: { departmentId: query.departmentId } } : {}),
       ...(query.dateFrom || query.dateTo
         ? {
             date: {
@@ -252,18 +266,7 @@ export class AttendanceRepository {
             },
           }
         : {}),
-      ...(query.search
-        ? {
-            employee: {
-              OR: [
-                { firstName: { contains: query.search, mode: 'insensitive' } },
-                { lastName: { contains: query.search, mode: 'insensitive' } },
-                { email: { contains: query.search, mode: 'insensitive' } },
-                { employeeCode: { contains: query.search, mode: 'insensitive' } },
-              ],
-            },
-          }
-        : {}),
+      ...(employeeFilters.length > 0 ? { employee: { AND: employeeFilters } } : {}),
     };
   }
 
